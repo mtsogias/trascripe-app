@@ -23,8 +23,10 @@ els.tabs.forEach((t) => {
     const tab = t.dataset.tab;
     els.transcribeView.classList.toggle("active", tab === "transcribe");
     els.notesView.classList.toggle("active", tab === "notes");
-    if (tab === "notes") renderNotes();
-  });
+  if (tab === "notes") renderNotes();
+  // Hide top-right actions in Notes tab
+  document.querySelector(".actions").style.visibility = (tab === "transcribe") ? "visible" : "hidden";
+});
 });
 
 // ---------- State ----------
@@ -38,47 +40,55 @@ let isRecording = false;
 let isLoading = false;
 
 // ---------- Transcript view helpers ----------
+let lastTranscript = "";
+
 function fmtTime(d = new Date()) {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 function addEntry(text) {
+  lastTranscript = text;
+  els.transcript.innerHTML = "";
   const div = document.createElement("div");
   div.className = "entry";
+  div.addEventListener("click", () => div.classList.toggle("expanded"));
   const t = document.createElement("span");
   t.className = "time";
   t.textContent = fmtTime();
-  const body = document.createTextNode(text);
+  const body = document.createElement("span");
+  body.className = "entry-body";
+  body.textContent = text;
   div.appendChild(t);
   div.appendChild(body);
   els.transcript.appendChild(div);
-  els.transcript.parentElement.scrollTop = els.transcript.parentElement.scrollHeight;
 }
 
-function getAllText() {
-  return [...els.transcript.querySelectorAll(".entry")]
-    .map((e) => e.textContent.replace(/^\d\d:\d\d\s*/, "").trim())
-    .join("\n\n");
+function getLastText() {
+  return lastTranscript;
 }
 
-els.copyAllBtn.addEventListener("click", async () => {
-  const txt = getAllText();
-  if (!txt) { flash("Nichts zu kopieren"); return; }
+async function copyText(txt) {
   try {
     await navigator.clipboard.writeText(txt);
     flash("Kopiert ✓");
   } catch {
-    // iOS fallback
     const ta = document.createElement("textarea");
     ta.value = txt; document.body.appendChild(ta);
     ta.select(); document.execCommand("copy"); ta.remove();
     flash("Kopiert ✓");
   }
+}
+
+els.copyAllBtn.addEventListener("click", async () => {
+  const txt = getLastText();
+  if (!txt) { flash("Nichts zu kopieren"); return; }
+  await copyText(txt);
 });
 
 els.clearBtn.addEventListener("click", () => {
-  if (!els.transcript.children.length) return;
-  if (!confirm("Aktuelle Transkriptionen löschen? (Alte sind in Notes gespeichert.)")) return;
+  if (!lastTranscript) return;
+  if (!confirm("Letzte Transkription löschen? (Gespeichert in Notes.)")) return;
+  lastTranscript = "";
   els.transcript.innerHTML = "";
 });
 
@@ -125,18 +135,14 @@ function renderNotes() {
       </div>`;
     el.querySelector(".note-body").textContent = n.text;
     el.querySelector('[data-act="copy"]').addEventListener("click", async () => {
-      try { await navigator.clipboard.writeText(n.text); flash("Kopiert ✓"); }
-      catch {
-        const ta = document.createElement("textarea");
-        ta.value = n.text; document.body.appendChild(ta);
-        ta.select(); document.execCommand("copy"); ta.remove();
-        flash("Kopiert ✓");
-      }
+      await copyText(n.text);
     });
     el.querySelector('[data-act="delete"]').addEventListener("click", () => {
+      if (!confirm("Diese Notiz löschen?")) return;
       const all = loadNotes().filter((x) => x.id !== n.id);
       saveNotes(all);
       renderNotes();
+      flash("Gelöscht");
     });
     els.notesList.appendChild(el);
   });

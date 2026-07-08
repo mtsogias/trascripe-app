@@ -85,7 +85,7 @@ html, body {
 /* Transcript */
 .transcript {
   display: flex; flex-direction: column; gap: 12px;
-  margin-top: auto; /* keep recent at bottom */
+  margin-top: 24px; /* sit near top */
 }
 .entry {
   background: var(--bg-soft);
@@ -94,6 +94,17 @@ html, body {
   font-size: 16px; line-height: 1.45;
   white-space: pre-wrap; word-wrap: break-word;
   animation: pop .2s ease-out;
+  cursor: pointer;
+}
+.entry .entry-body {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.entry.expanded .entry-body {
+  -webkit-line-clamp: unset;
+  overflow: visible;
 }
 .entry .time {
   display: block; color: var(--muted); font-size: 11px;
