@@ -174,18 +174,17 @@ html, body {
   animation: pulse 1s ease-in-out infinite;
 }
 .stop-btn {
-  display: flex; align-items: center; gap: 6px;
-  height: 44px; padding: 0 18px;
-  border-radius: 22px;
-  background: rgba(255,92,92,0.15);
-  border: 1px solid rgba(255,92,92,0.5);
-  color: var(--danger);
-  font-size: 14px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  background: rgba(110,168,254,0.15);
+  border: 1px solid rgba(110,168,254,0.5);
+  color: var(--accent);
   transition: transform .12s, background .15s;
   animation: slideIn .2s ease-out;
 }
-.stop-btn:active { transform: scale(0.94); background: rgba(255,92,92,0.25); }
+.stop-btn:active { transform: scale(0.94); background: rgba(110,168,254,0.25); }
 .stop-btn[hidden] { display: none; }
-.stop-btn svg { color: var(--danger); }
+.stop-btn svg { color: var(--accent); }
 @keyframes slideIn { from { transform: translateX(-8px); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes pulse { 0%,100% { transform: scale(1); opacity: 1; } 50% { transform: scale(0.7); opacity: 0.6; } }
