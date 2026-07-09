@@ -29,7 +29,7 @@ export default async function handler(req, res) {
     form.append("response_format", "json");
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 55000);
+    const timeout = setTimeout(() => controller.abort(), 170000);
 
     let groqRes;
     try {
@@ -65,6 +65,6 @@ export const config = {
     bodyParser: {
       sizeLimit: "25mb",
     },
-    maxDuration: 60,
+    maxDuration: 300,
   },
 };

@@ -141,6 +141,9 @@ html, body {
   border-top: 1px solid rgba(255,255,255,0.06);
   background: linear-gradient(to top, rgba(0,0,0,0.4), transparent);
 }
+.record-row {
+  display: flex; align-items: center; gap: 16px;
+}
 .record-btn {
   width: 72px; height: 72px; border-radius: 50%;
   background: rgba(255,255,255,0.08);
@@ -170,4 +173,19 @@ html, body {
   background: var(--accent);
   animation: pulse 1s ease-in-out infinite;
 }
+.stop-btn {
+  display: flex; align-items: center; gap: 6px;
+  height: 44px; padding: 0 18px;
+  border-radius: 22px;
+  background: rgba(255,92,92,0.15);
+  border: 1px solid rgba(255,92,92,0.5);
+  color: var(--danger);
+  font-size: 14px; font-weight: 600;
+  transition: transform .12s, background .15s;
+  animation: slideIn .2s ease-out;
+}
+.stop-btn:active { transform: scale(0.94); background: rgba(255,92,92,0.25); }
+.stop-btn[hidden] { display: none; }
+.stop-btn svg { color: var(--danger); }
+@keyframes slideIn { from { transform: translateX(-8px); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes pulse { 0%,100% { transform: scale(1); opacity: 1; } 50% { transform: scale(0.7); opacity: 0.6; } }

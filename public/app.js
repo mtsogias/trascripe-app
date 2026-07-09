@@ -6,6 +6,7 @@ const els = {
   transcribeView: $("#transcribeView"),
   notesView: $("#notesView"),
   recordBtn: $("#recordBtn"),
+  stopBtn: $("#stopBtn"),
   copyAllBtn: $("#copyAllBtn"),
   clearBtn: $("#clearBtn"),
   transcript: $("#transcript"),
@@ -188,6 +189,7 @@ function renderNotes() {
 
 // ---------- Recording ----------
 els.recordBtn.addEventListener("click", toggleRecord);
+els.stopBtn.addEventListener("click", () => { if (isRecording) stopRecording(); });
 
 async function toggleRecord() {
   if (isLoading) return;
@@ -232,6 +234,7 @@ async function startRecording() {
   mediaRecorder.start(1000);
   isRecording = true;
   els.recordBtn.classList.add("recording");
+  els.stopBtn.hidden = false;
   setRecordingTimer();
   startWaveform();
 }
@@ -242,6 +245,7 @@ function cleanupRecording() {
   clearRecordingTimer();
   stopWaveform();
   els.recordBtn.classList.remove("recording", "loading");
+  els.stopBtn.hidden = true;
   els.status.textContent = "";
   releaseWakeLock();
   if (audioStream) {
@@ -261,6 +265,7 @@ function stopRecording() {
   isRecording = false;
   clearRecordingTimer();
   els.recordBtn.classList.remove("recording");
+  els.stopBtn.hidden = true;
   els.recordBtn.classList.add("loading");
   els.status.textContent = "Transkribiere…";
   stopWaveform();
@@ -302,7 +307,7 @@ async function onRecordStop() {
 
 async function transcribeWithRetry(payload, attempt = 1) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 90000);
+  const timeout = setTimeout(() => controller.abort(), 180000);
   try {
     const res = await fetch("/api/transcribe", {
       method: "POST",

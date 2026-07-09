@@ -49,9 +49,15 @@
     </main>
 
     <footer class="bottombar">
-      <button id="recordBtn" class="record-btn" aria-label="Aufnahme starten">
-        <span class="record-dot"></span>
-      </button>
+      <div class="record-row">
+        <button id="recordBtn" class="record-btn" aria-label="Aufnahme starten">
+          <span class="record-dot"></span>
+        </button>
+        <button id="stopBtn" class="stop-btn" aria-label="Aufnahme beenden" hidden>
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          <span>Stopp</span>
+        </button>
+      </div>
     </footer>
   </div>
   <script src="/app.js"></script>
