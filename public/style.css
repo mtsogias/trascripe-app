@@ -142,9 +142,12 @@ html, body {
   background: linear-gradient(to top, rgba(0,0,0,0.4), transparent);
 }
 .record-row {
-  position: relative;
   display: flex; align-items: center; justify-content: center;
   gap: 16px;
+}
+.record-slot {
+  width: 44px;
+  display: flex; align-items: center; justify-content: center;
 }
 .record-btn {
   width: 72px; height: 72px; border-radius: 50%;
@@ -175,8 +178,6 @@ html, body {
   animation: pulse 1s ease-in-out infinite;
 }
 .stop-btn {
-  position: absolute;
-  right: calc(72px / 2 + 16px);
   display: flex; align-items: center; justify-content: center;
   width: 44px; height: 44px;
   border-radius: 50%;
