@@ -142,7 +142,9 @@ html, body {
   background: linear-gradient(to top, rgba(0,0,0,0.4), transparent);
 }
 .record-row {
-  display: flex; align-items: center; gap: 16px;
+  position: relative;
+  display: flex; align-items: center; justify-content: center;
+  gap: 16px;
 }
 .record-btn {
   width: 72px; height: 72px; border-radius: 50%;
@@ -155,15 +157,14 @@ html, body {
 .record-dot {
   width: 22px; height: 22px; border-radius: 50%;
   background: var(--danger);
-  transition: all .18s;
+  transition: transform .18s;
 }
 .record-btn.recording {
   background: rgba(255,92,92,0.12);
   border-color: rgba(255,92,92,0.6);
 }
 .record-btn.recording .record-dot {
-  width: 20px; height: 20px; border-radius: 6px;
-  background: var(--danger);
+  transform: scale(0.9);
 }
 .record-btn.loading {
   background: rgba(110,168,254,0.12);
@@ -174,6 +175,8 @@ html, body {
   animation: pulse 1s ease-in-out infinite;
 }
 .stop-btn {
+  position: absolute;
+  right: calc(72px / 2 + 16px);
   display: flex; align-items: center; justify-content: center;
   width: 44px; height: 44px;
   border-radius: 50%;
