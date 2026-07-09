@@ -23,10 +23,9 @@ els.tabs.forEach((t) => {
     const tab = t.dataset.tab;
     els.transcribeView.classList.toggle("active", tab === "transcribe");
     els.notesView.classList.toggle("active", tab === "notes");
-  if (tab === "notes") renderNotes();
-  // Hide top-right actions in Notes tab
-  document.querySelector(".actions").style.visibility = (tab === "transcribe") ? "visible" : "hidden";
-});
+    if (tab === "notes") renderNotes();
+    document.querySelector(".actions").style.visibility = (tab === "transcribe") ? "visible" : "hidden";
+  });
 });
 
 // ---------- State ----------
@@ -38,12 +37,40 @@ let analyser = null;
 let waveRAF = null;
 let isRecording = false;
 let isLoading = false;
+let wakeLock = null;
+let recordStartTime = 0;
+let recordTimerInterval = null;
+
+// ---------- Wake Lock (keep screen awake) ----------
+async function acquireWakeLock() {
+  try {
+    if ("wakeLock" in navigator) {
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => { wakeLock = null; });
+    }
+  } catch {}
+}
+function releaseWakeLock() {
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+}
+// Re-acquire on visibility change (iOS sometimes drops it)
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && (isRecording || isLoading)) {
+    acquireWakeLock();
+  }
+});
 
 // ---------- Transcript view helpers ----------
 let lastTranscript = "";
 
 function fmtTime(d = new Date()) {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function fmtDuration(sec) {
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
 function addEntry(text) {
@@ -94,7 +121,18 @@ els.clearBtn.addEventListener("click", () => {
 
 function flash(msg) {
   els.status.textContent = msg;
-  setTimeout(() => { if (els.status.textContent === msg) els.status.textContent = ""; }, 1600);
+  setTimeout(() => { if (els.status.textContent === msg) els.status.textContent = ""; }, 2000);
+}
+
+function setRecordingTimer() {
+  recordStartTime = Date.now();
+  recordTimerInterval = setInterval(() => {
+    const elapsed = (Date.now() - recordStartTime) / 1000;
+    els.status.textContent = `Aufnahme… ${fmtDuration(elapsed)}`;
+  }, 500);
+}
+function clearRecordingTimer() {
+  if (recordTimerInterval) { clearInterval(recordTimerInterval); recordTimerInterval = null; }
 }
 
 // ---------- Notes (localStorage) ----------
@@ -168,27 +206,60 @@ async function startRecording() {
     return;
   }
 
+  await acquireWakeLock();
+
   // pick mime that iOS supports
   let mime = "audio/webm";
   if (!MediaRecorder.isTypeSupported(mime)) {
     mime = "audio/mp4";
     if (!MediaRecorder.isTypeSupported(mime)) mime = "";
   }
-  mediaRecorder = mime ? new MediaRecorder(audioStream, { mimeType: mime }) : new MediaRecorder(audioStream);
+  try {
+    mediaRecorder = mime ? new MediaRecorder(audioStream, { mimeType: mime }) : new MediaRecorder(audioStream);
+  } catch {
+    mediaRecorder = new MediaRecorder(audioStream);
+  }
   audioChunks = [];
-  mediaRecorder.ondataavailable = (e) => { if (e.data.size) audioChunks.push(e.data); };
+  mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) audioChunks.push(e.data); };
   mediaRecorder.onstop = onRecordStop;
+  mediaRecorder.onerror = (e) => {
+    console.error("MediaRecorder error:", e);
+    flash("Aufnahme-Fehler");
+    cleanupRecording();
+  };
 
-  mediaRecorder.start();
+  // chunk every 1s so we don't lose everything if iOS freezes the page
+  mediaRecorder.start(1000);
   isRecording = true;
   els.recordBtn.classList.add("recording");
-  els.status.textContent = "Aufnahme…";
+  setRecordingTimer();
   startWaveform();
 }
 
-function stopRecording() {
-  if (mediaRecorder && mediaRecorder.state === "recording") mediaRecorder.stop();
+function cleanupRecording() {
   isRecording = false;
+  isLoading = false;
+  clearRecordingTimer();
+  stopWaveform();
+  els.recordBtn.classList.remove("recording", "loading");
+  els.status.textContent = "";
+  releaseWakeLock();
+  if (audioStream) {
+    audioStream.getTracks().forEach((t) => t.stop());
+    audioStream = null;
+  }
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state === "recording") {
+    mediaRecorder.stop();
+  } else {
+    // recorder already stopped or in weird state — cleanup
+    cleanupRecording();
+    return;
+  }
+  isRecording = false;
+  clearRecordingTimer();
   els.recordBtn.classList.remove("recording");
   els.recordBtn.classList.add("loading");
   els.status.textContent = "Transkribiere…";
@@ -196,19 +267,24 @@ function stopRecording() {
 }
 
 async function onRecordStop() {
-  audioStream?.getTracks().forEach((t) => t.stop());
-  const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType || "audio/webm" });
+  if (audioStream) {
+    audioStream.getTracks().forEach((t) => t.stop());
+  }
+  const mimeType = (mediaRecorder && mediaRecorder.mimeType) || "audio/webm";
+  const blob = new Blob(audioChunks, { type: mimeType });
   audioChunks = [];
+
+  if (!blob.size || blob.size < 200) {
+    flash("Aufnahme zu kurz");
+    cleanupRecording();
+    return;
+  }
+
+  isLoading = true;
   try {
     const b64 = await blobToBase64(blob);
-    const res = await fetch("/api/transcribe", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ audio: b64, mime: blob.type }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Transcribe failed");
-    const text = (data.text || "").trim();
+    const payload = JSON.stringify({ audio: b64, mime: mimeType });
+    const text = await transcribeWithRetry(payload);
     if (text) {
       addEntry(text);
       archiveToNotes(text);
@@ -216,11 +292,35 @@ async function onRecordStop() {
       flash("Leere Transkription");
     }
   } catch (e) {
-    console.error(e);
+    console.error("Transcribe error:", e);
     flash("Fehler: " + (e.message || e));
   } finally {
-    els.recordBtn.classList.remove("loading");
-    els.status.textContent = "";
+    isLoading = false;
+    cleanupRecording();
+  }
+}
+
+async function transcribeWithRetry(payload, attempt = 1) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 90000);
+  try {
+    const res = await fetch("/api/transcribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: payload,
+      signal: controller.signal,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return (data.text || "").trim();
+  } catch (err) {
+    if (err.name === "AbortError" && attempt < 2) {
+      // retry once
+      return transcribeWithRetry(payload, attempt + 1);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -238,10 +338,15 @@ function startWaveform() {
   els.waveCanvas.classList.add("active");
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   if (audioCtx.state === "suspended") audioCtx.resume();
-  const source = audioCtx.createMediaStreamSource(audioStream);
-  analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 256;
-  source.connect(analyser);
+  try {
+    const source = audioCtx.createMediaStreamSource(audioStream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+  } catch (e) {
+    console.error("Waveform init error:", e);
+    return;
+  }
   const buffer = new Uint8Array(analyser.frequencyBinCount);
   const ctx = els.waveCanvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
@@ -289,7 +394,18 @@ function stopWaveform() {
   ctx && ctx.clearRect(0, 0, els.waveCanvas.width, els.waveCanvas.height);
 }
 
-// ---------- Service worker for offline shell (optional) ----------
+// ---------- Handle page freeze / visibility ----------
+// If the page was hidden during recording and comes back, stop gracefully
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") return;
+  // page hidden
+  if (isRecording) {
+    // try to stop recording cleanly — iOS may allow a brief window
+    try { if (mediaRecorder && mediaRecorder.state === "recording") mediaRecorder.stop(); } catch {}
+  }
+});
+
+// ---------- Service worker for offline shell ----------
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
 }

@@ -28,11 +28,20 @@ export default async function handler(req, res) {
     form.append("model", MODEL);
     form.append("response_format", "json");
 
-    const groqRes = await fetch(GROQ_ENDPOINT, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}` },
-      body: form,
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 55000);
+
+    let groqRes;
+    try {
+      groqRes = await fetch(GROQ_ENDPOINT, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: form,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
 
     if (!groqRes.ok) {
       const errText = await groqRes.text();
@@ -44,6 +53,9 @@ export default async function handler(req, res) {
     return res.status(200).json({ text: data.text || "" });
   } catch (err) {
     console.error("Transcribe error:", err);
+    if (err.name === "AbortError") {
+      return res.status(504).json({ error: "Groq timeout (audio too long?)" });
+    }
     return res.status(500).json({ error: String(err) });
   }
 }
@@ -53,5 +65,6 @@ export const config = {
     bodyParser: {
       sizeLimit: "25mb",
     },
+    maxDuration: 60,
   },
 };
