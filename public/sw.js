@@ -1,4 +1,4 @@
-const CACHE = "whisperflow-v9";
+const CACHE = "whisperflow-v10";
 const SHELL = ["/", "/index.html", "/style.css", "/app.js", "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {

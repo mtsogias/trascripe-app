@@ -93,7 +93,7 @@ function renderEntry(text, { live } = {}) {
     entryEl.className = "entry";
     const time = document.createElement("span");
     time.className = "time";
-    const body = document.createElement("span");
+    const body = document.createElement("div");
     body.className = "entry-body";
     entryEl.appendChild(time);
     entryEl.appendChild(body);
@@ -102,8 +102,9 @@ function renderEntry(text, { live } = {}) {
   entryEl.classList.toggle("live", !!live);
   entryEl.querySelector(".time").textContent = live ? `${fmtTime()} · Vorschau` : fmtTime();
   const body = entryEl.querySelector(".entry-body");
+  const pinBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 48;
   body.textContent = text || (live ? "…" : "");
-  body.scrollTop = body.scrollHeight;
+  if (pinBottom) body.scrollTop = body.scrollHeight;
 }
 
 function getLastText() {
@@ -478,7 +479,7 @@ function startWaveform() {
     const source = audioCtx.createMediaStreamSource(audioStream);
     analyser = audioCtx.createAnalyser();
     analyser.fftSize = 256;
-    analyser.smoothingTimeConstant = 0.55;
+    analyser.smoothingTimeConstant = 0.2;
     source.connect(analyser);
   } catch (e) {
     console.error("Waveform init error:", e);
@@ -489,6 +490,7 @@ function startWaveform() {
   const dpr = window.devicePixelRatio || 1;
   const bars = 15;
   const levels = new Float32Array(bars);
+  const GAIN = 7;
   function resize() {
     const r = els.waveCanvas.getBoundingClientRect();
     els.waveCanvas.width = r.width * dpr;
@@ -510,9 +512,10 @@ function startWaveform() {
         const v = Math.abs(buffer[start + j] - 128) / 128;
         if (v > peak) peak = v;
       }
-      levels[i] += (peak - levels[i]) * 0.4;
-      const minH = 6 * dpr;
-      const maxH = h * 0.92;
+      const boosted = Math.min(1, peak * GAIN);
+      levels[i] += (boosted - levels[i]) * (boosted > levels[i] ? 0.72 : 0.32);
+      const minH = 5 * dpr;
+      const maxH = h * 0.96;
       const barH = minH + levels[i] * (maxH - minH);
       const x = i * (barW + gap) + barW / 2;
       const y1 = (h - barH) / 2;

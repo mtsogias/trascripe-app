@@ -84,9 +84,11 @@ html, body {
   animation: pop .2s ease-out;
 }
 .entry .entry-body {
-  max-height: calc(1.45em * 10);
+  display: block;
+  max-height: calc(1.45em * 9);
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 .entry .time {
   display: block; color: var(--muted); font-size: 11px;
