@@ -16,6 +16,9 @@ const els = {
 };
 
 const NOTES_KEY = "whisperflow.notes.v1";
+const DRAFT_KEY = "whisperflow.draft.v1";
+const SEGMENT_MS = 10000;
+const AUDIO_BITRATE = 64000;
 
 // ---------- Tab switching ----------
 els.tabs.forEach((t) => {
@@ -38,9 +41,19 @@ let analyser = null;
 let waveRAF = null;
 let isRecording = false;
 let isLoading = false;
+let wantRecording = false;
+let finishing = false;
 let wakeLock = null;
 let recordStartTime = 0;
 let recordTimerInterval = null;
+let segmentTimer = null;
+let sessionMime = "";
+let sessionText = "";
+let entryEl = null;
+let chunkSeq = 0;
+let nextToShow = 0;
+let pendingResults = new Map();
+let inflight = [];
 
 // ---------- Wake Lock (keep screen awake) ----------
 async function acquireWakeLock() {
@@ -54,7 +67,6 @@ async function acquireWakeLock() {
 function releaseWakeLock() {
   if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
 }
-// Re-acquire on visibility change (iOS sometimes drops it)
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && (isRecording || isLoading)) {
     acquireWakeLock();
@@ -74,21 +86,26 @@ function fmtDuration(sec) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-function addEntry(text) {
-  lastTranscript = text;
-  els.transcript.innerHTML = "";
-  const div = document.createElement("div");
-  div.className = "entry";
-  div.addEventListener("click", () => div.classList.toggle("expanded"));
-  const t = document.createElement("span");
-  t.className = "time";
-  t.textContent = fmtTime();
-  const body = document.createElement("span");
-  body.className = "entry-body";
-  body.textContent = text;
-  div.appendChild(t);
-  div.appendChild(body);
-  els.transcript.appendChild(div);
+function renderEntry(text, { live } = {}) {
+  if (text && text !== "…") lastTranscript = text;
+  if (!entryEl || !els.transcript.contains(entryEl)) {
+    els.transcript.innerHTML = "";
+    entryEl = document.createElement("div");
+    entryEl.className = "entry expanded";
+    entryEl.addEventListener("click", () => entryEl.classList.toggle("expanded"));
+    const time = document.createElement("span");
+    time.className = "time";
+    const body = document.createElement("span");
+    body.className = "entry-body";
+    entryEl.appendChild(time);
+    entryEl.appendChild(body);
+    els.transcript.appendChild(entryEl);
+  }
+  entryEl.classList.toggle("live", !!live);
+  if (live) entryEl.classList.add("expanded");
+  entryEl.querySelector(".time").textContent = live ? `${fmtTime()} · Vorschau` : fmtTime();
+  entryEl.querySelector(".entry-body").textContent = text || (live ? "…" : "");
+  entryEl.scrollIntoView({ block: "nearest" });
 }
 
 function getLastText() {
@@ -114,10 +131,14 @@ els.copyAllBtn.addEventListener("click", async () => {
 });
 
 els.clearBtn.addEventListener("click", () => {
-  if (!lastTranscript) return;
+  if (isRecording || isLoading) { flash("Erst Aufnahme beenden"); return; }
+  if (!lastTranscript && !sessionText) return;
   if (!confirm("Letzte Transkription löschen? (Gespeichert in Notes.)")) return;
   lastTranscript = "";
+  sessionText = "";
+  entryEl = null;
   els.transcript.innerHTML = "";
+  clearDraft();
 });
 
 function flash(msg) {
@@ -129,11 +150,36 @@ function setRecordingTimer() {
   recordStartTime = Date.now();
   recordTimerInterval = setInterval(() => {
     const elapsed = (Date.now() - recordStartTime) / 1000;
-    els.status.textContent = `Aufnahme… ${fmtDuration(elapsed)}`;
+    const extra = sessionText ? "" : " · Vorschau gleich";
+    els.status.textContent = `Aufnahme… ${fmtDuration(elapsed)}${extra}`;
   }, 500);
 }
 function clearRecordingTimer() {
   if (recordTimerInterval) { clearInterval(recordTimerInterval); recordTimerInterval = null; }
+}
+
+// ---------- Draft (crash recovery) ----------
+function saveDraft(text) {
+  if (!text || !text.trim()) return;
+  try {
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({ text, time: new Date().toISOString() }));
+  } catch {}
+}
+function loadDraft() {
+  try { return JSON.parse(localStorage.getItem(DRAFT_KEY)); }
+  catch { return null; }
+}
+function clearDraft() {
+  localStorage.removeItem(DRAFT_KEY);
+}
+function recoverDraft() {
+  const d = loadDraft();
+  if (!d || !d.text || !d.text.trim()) return;
+  sessionText = d.text;
+  renderEntry(d.text, { live: false });
+  archiveToNotes(d.text);
+  clearDraft();
+  flash("Zwischenspeicher wiederhergestellt");
 }
 
 // ---------- Notes (localStorage) ----------
@@ -200,6 +246,16 @@ async function toggleRecord() {
   }
 }
 
+function pickMime() {
+  const isiOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+    || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  if (isiOS && MediaRecorder.isTypeSupported("audio/mp4")) return "audio/mp4";
+  if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) return "audio/webm;codecs=opus";
+  if (MediaRecorder.isTypeSupported("audio/webm")) return "audio/webm";
+  if (MediaRecorder.isTypeSupported("audio/mp4")) return "audio/mp4";
+  return "";
+}
+
 async function startRecording() {
   try {
     audioStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
@@ -210,38 +266,61 @@ async function startRecording() {
 
   await acquireWakeLock();
 
-  // pick mime that iOS supports
-  let mime = "audio/webm";
-  if (!MediaRecorder.isTypeSupported(mime)) {
-    mime = "audio/mp4";
-    if (!MediaRecorder.isTypeSupported(mime)) mime = "";
-  }
-  try {
-    mediaRecorder = mime ? new MediaRecorder(audioStream, { mimeType: mime }) : new MediaRecorder(audioStream);
-  } catch {
-    mediaRecorder = new MediaRecorder(audioStream);
-  }
-  audioChunks = [];
-  mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) audioChunks.push(e.data); };
-  mediaRecorder.onstop = onRecordStop;
-  mediaRecorder.onerror = (e) => {
-    console.error("MediaRecorder error:", e);
-    flash("Aufnahme-Fehler");
-    cleanupRecording();
-  };
-
-  // chunk every 1s so we don't lose everything if iOS freezes the page
-  mediaRecorder.start(1000);
+  sessionMime = pickMime();
+  sessionText = "";
+  lastTranscript = "";
+  entryEl = null;
+  chunkSeq = 0;
+  nextToShow = 0;
+  pendingResults = new Map();
+  inflight = [];
+  finishing = false;
+  wantRecording = true;
   isRecording = true;
+
+  renderEntry("", { live: true });
   els.recordBtn.classList.add("recording");
   els.stopBtn.hidden = false;
   setRecordingTimer();
   startWaveform();
+  startSegment();
+}
+
+function startSegment() {
+  if (!audioStream || !wantRecording) return;
+  audioChunks = [];
+  const opts = { audioBitsPerSecond: AUDIO_BITRATE };
+  if (sessionMime) opts.mimeType = sessionMime;
+  try {
+    mediaRecorder = new MediaRecorder(audioStream, opts);
+  } catch {
+    mediaRecorder = new MediaRecorder(audioStream);
+  }
+  mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) audioChunks.push(e.data); };
+  mediaRecorder.onstop = onSegmentStop;
+  mediaRecorder.onerror = (e) => {
+    console.error("MediaRecorder error:", e);
+    flash("Aufnahme-Fehler");
+    wantRecording = false;
+    isRecording = false;
+    try { if (mediaRecorder && mediaRecorder.state === "recording") mediaRecorder.stop(); } catch {}
+  };
+  mediaRecorder.start(1000);
+  clearTimeout(segmentTimer);
+  segmentTimer = setTimeout(() => {
+    if (wantRecording && mediaRecorder && mediaRecorder.state === "recording") {
+      mediaRecorder.stop();
+    }
+  }, SEGMENT_MS);
 }
 
 function cleanupRecording() {
+  wantRecording = false;
   isRecording = false;
   isLoading = false;
+  finishing = false;
+  clearTimeout(segmentTimer);
+  segmentTimer = null;
   clearRecordingTimer();
   stopWaveform();
   els.recordBtn.classList.remove("recording", "loading");
@@ -252,62 +331,114 @@ function cleanupRecording() {
     audioStream.getTracks().forEach((t) => t.stop());
     audioStream = null;
   }
+  mediaRecorder = null;
 }
 
 function stopRecording() {
-  if (mediaRecorder && mediaRecorder.state === "recording") {
-    mediaRecorder.stop();
-  } else {
-    // recorder already stopped or in weird state — cleanup
-    cleanupRecording();
-    return;
-  }
+  if (!isRecording && !wantRecording) return;
+  wantRecording = false;
   isRecording = false;
+  clearTimeout(segmentTimer);
+  segmentTimer = null;
   clearRecordingTimer();
   els.recordBtn.classList.remove("recording");
   els.stopBtn.hidden = true;
   els.recordBtn.classList.add("loading");
-  els.status.textContent = "Transkribiere…";
+  isLoading = true;
+  els.status.textContent = inflight.length ? `Transkribiere… (${inflight.length})` : "Transkribiere…";
   stopWaveform();
+  if (mediaRecorder && mediaRecorder.state === "recording") {
+    mediaRecorder.stop();
+  } else {
+    finishSession();
+  }
 }
 
-async function onRecordStop() {
-  if (audioStream) {
-    audioStream.getTracks().forEach((t) => t.stop());
-  }
-  const mimeType = (mediaRecorder && mediaRecorder.mimeType) || "audio/webm";
+function onSegmentStop() {
+  const mimeType = (mediaRecorder && mediaRecorder.mimeType) || sessionMime || "audio/webm";
   const blob = new Blob(audioChunks, { type: mimeType });
   audioChunks = [];
+  const keepGoing = wantRecording;
 
-  if (!blob.size || blob.size < 200) {
+  if (keepGoing) {
+    setTimeout(() => {
+      if (wantRecording && audioStream) startSegment();
+    }, 50);
+  }
+
+  if (blob.size >= 200) {
+    transcribeSegment(blob, mimeType, chunkSeq++);
+  } else if (!keepGoing && chunkSeq === 0 && !sessionText) {
     flash("Aufnahme zu kurz");
     cleanupRecording();
     return;
   }
 
-  isLoading = true;
-  try {
-    const b64 = await blobToBase64(blob);
-    const payload = JSON.stringify({ audio: b64, mime: mimeType });
-    const text = await transcribeWithRetry(payload);
-    if (text) {
-      addEntry(text);
-      archiveToNotes(text);
-    } else {
-      flash("Leere Transkription");
+  if (!keepGoing) finishSession();
+}
+
+function transcribeSegment(blob, mimeType, seq) {
+  const p = (async () => {
+    try {
+      const text = await transcribeBlob(blob, mimeType);
+      pendingResults.set(seq, text || "");
+    } catch (e) {
+      console.error("Transcribe error:", e);
+      pendingResults.set(seq, "");
+      flash("Stück fehlgeschlagen, Aufnahme läuft weiter");
     }
-  } catch (e) {
-    console.error("Transcribe error:", e);
-    flash("Fehler: " + (e.message || e));
-  } finally {
-    isLoading = false;
-    cleanupRecording();
+    flushPreview();
+  })();
+  inflight.push(p);
+  p.finally(() => {
+    inflight = inflight.filter((x) => x !== p);
+  });
+}
+
+function flushPreview() {
+  while (pendingResults.has(nextToShow)) {
+    const t = pendingResults.get(nextToShow);
+    pendingResults.delete(nextToShow);
+    nextToShow++;
+    if (!t) continue;
+    sessionText = sessionText ? `${sessionText} ${t}` : t;
+    lastTranscript = sessionText;
+    const stillLive = wantRecording || isRecording || inflight.length > 0 || !finishing;
+    renderEntry(sessionText, { live: stillLive });
+    saveDraft(sessionText);
   }
+}
+
+async function finishSession() {
+  if (finishing) return;
+  finishing = true;
+  isLoading = true;
+  while (inflight.length) {
+    els.status.textContent = `Transkribiere… (${inflight.length})`;
+    await Promise.all([...inflight]);
+  }
+  flushPreview();
+  const text = (sessionText || "").trim();
+  if (text) {
+    renderEntry(text, { live: false });
+    archiveToNotes(text);
+    clearDraft();
+    cleanupRecording();
+  } else {
+    cleanupRecording();
+    flash("Leere Transkription");
+  }
+}
+
+async function transcribeBlob(blob, mimeType) {
+  const b64 = await blobToBase64(blob);
+  const payload = JSON.stringify({ audio: b64, mime: mimeType || blob.type || "audio/webm" });
+  return transcribeWithRetry(payload);
 }
 
 async function transcribeWithRetry(payload, attempt = 1) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 180000);
+  const timeout = setTimeout(() => controller.abort(), 90000);
   try {
     const res = await fetch("/api/transcribe", {
       method: "POST",
@@ -315,12 +446,16 @@ async function transcribeWithRetry(payload, attempt = 1) {
       body: payload,
       signal: controller.signal,
     });
-    const data = await res.json();
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      throw new Error(`HTTP ${res.status}`);
+    }
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     return (data.text || "").trim();
   } catch (err) {
     if (err.name === "AbortError" && attempt < 2) {
-      // retry once
       return transcribeWithRetry(payload, attempt + 1);
     }
     throw err;
@@ -364,6 +499,7 @@ function startWaveform() {
   const bars = 64;
   let phase = 0;
   function draw() {
+    if (!analyser) return;
     analyser.getByteFrequencyData(buffer);
     const w = els.waveCanvas.width, h = els.waveCanvas.height;
     const cx = w / 2, cy = h / 2;
@@ -400,17 +536,14 @@ function stopWaveform() {
 }
 
 // ---------- Handle page freeze / visibility ----------
-// If the page was hidden during recording and comes back, stop gracefully
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") return;
-  // page hidden
-  if (isRecording) {
-    // try to stop recording cleanly — iOS may allow a brief window
-    try { if (mediaRecorder && mediaRecorder.state === "recording") mediaRecorder.stop(); } catch {}
-  }
+  if (isRecording) stopRecording();
 });
 
 // ---------- Service worker for offline shell ----------
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
 }
+
+recoverDraft();

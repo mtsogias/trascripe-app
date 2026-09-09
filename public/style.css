@@ -110,6 +110,13 @@ html, body {
   display: block; color: var(--muted); font-size: 11px;
   margin-bottom: 6px; font-variant-numeric: tabular-nums;
 }
+.entry.live {
+  outline: 1px solid rgba(110,168,254,0.35);
+}
+.entry.live .entry-body {
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
 @keyframes pop { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
 
 /* Notes */
