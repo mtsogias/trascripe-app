@@ -479,7 +479,7 @@ function startWaveform() {
     const source = audioCtx.createMediaStreamSource(audioStream);
     analyser = audioCtx.createAnalyser();
     analyser.fftSize = 256;
-    analyser.smoothingTimeConstant = 0.2;
+    analyser.smoothingTimeConstant = 0.45;
     source.connect(analyser);
   } catch (e) {
     console.error("Waveform init error:", e);
@@ -490,7 +490,7 @@ function startWaveform() {
   const dpr = window.devicePixelRatio || 1;
   const bars = 15;
   const levels = new Float32Array(bars);
-  const GAIN = 7;
+  const GAIN = 2;
   function resize() {
     const r = els.waveCanvas.getBoundingClientRect();
     els.waveCanvas.width = r.width * dpr;
@@ -513,9 +513,9 @@ function startWaveform() {
         if (v > peak) peak = v;
       }
       const boosted = Math.min(1, peak * GAIN);
-      levels[i] += (boosted - levels[i]) * (boosted > levels[i] ? 0.72 : 0.32);
-      const minH = 5 * dpr;
-      const maxH = h * 0.96;
+      levels[i] += (boosted - levels[i]) * 0.42;
+      const minH = 6 * dpr;
+      const maxH = h * 0.92;
       const barH = minH + levels[i] * (maxH - minH);
       const x = i * (barW + gap) + barW / 2;
       const y1 = (h - barH) / 2;
