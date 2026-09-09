@@ -56,24 +56,12 @@ html, body {
 .view {
   position: absolute; inset: 0;
   display: flex; flex-direction: column;
-  padding: 16px 18px 120px;
+  padding: 16px 18px 20px;
   opacity: 0; pointer-events: none;
   transition: opacity .18s;
   overflow-y: auto;
 }
 .view.active { opacity: 1; pointer-events: auto; }
-
-/* Waveform canvas (center) */
-.wave-canvas {
-  position: absolute;
-  top: 50%; left: 50%;
-  width: min(70vw, 320px); height: min(70vw, 320px);
-  transform: translate(-50%, -50%);
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity .25s;
-}
-.wave-canvas.active { opacity: 1; }
 
 .status {
   text-align: center;
@@ -94,17 +82,11 @@ html, body {
   font-size: 16px; line-height: 1.45;
   white-space: pre-wrap; word-wrap: break-word;
   animation: pop .2s ease-out;
-  cursor: pointer;
 }
 .entry .entry-body {
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.entry.expanded .entry-body {
-  -webkit-line-clamp: unset;
-  overflow: visible;
+  max-height: calc(1.45em * 10);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .entry .time {
   display: block; color: var(--muted); font-size: 11px;
@@ -112,10 +94,6 @@ html, body {
 }
 .entry.live {
   outline: 1px solid rgba(110,168,254,0.35);
-}
-.entry.live .entry-body {
-  -webkit-line-clamp: unset;
-  overflow: visible;
 }
 @keyframes pop { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
 
@@ -143,19 +121,22 @@ html, body {
 /* Bottom record bar */
 .bottombar {
   flex: 0 0 auto;
-  display: grid; place-items: center;
-  padding: 14px 0 calc(14px + var(--safe-bottom));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 0 calc(14px + var(--safe-bottom));
   border-top: 1px solid rgba(255,255,255,0.06);
   background: linear-gradient(to top, rgba(0,0,0,0.4), transparent);
 }
-.record-row {
-  display: flex; align-items: center; justify-content: center;
-  gap: 16px;
+.wave-canvas {
+  width: 168px;
+  height: 36px;
+  margin-bottom: 10px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .2s;
 }
-.record-slot {
-  width: 44px;
-  display: flex; align-items: center; justify-content: center;
-}
+.wave-canvas.active { opacity: 1; }
 .record-btn {
   width: 72px; height: 72px; border-radius: 50%;
   background: rgba(255,255,255,0.08);
@@ -184,18 +165,4 @@ html, body {
   background: var(--accent);
   animation: pulse 1s ease-in-out infinite;
 }
-.stop-btn {
-  display: flex; align-items: center; justify-content: center;
-  width: 44px; height: 44px;
-  border-radius: 50%;
-  background: rgba(110,168,254,0.15);
-  border: 1px solid rgba(110,168,254,0.5);
-  color: var(--accent);
-  transition: transform .12s, background .15s;
-  animation: slideIn .2s ease-out;
-}
-.stop-btn:active { transform: scale(0.94); background: rgba(110,168,254,0.25); }
-.stop-btn[hidden] { display: none; }
-.stop-btn svg { color: var(--accent); }
-@keyframes slideIn { from { transform: translateX(-8px); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes pulse { 0%,100% { transform: scale(1); opacity: 1; } 50% { transform: scale(0.7); opacity: 0.6; } }

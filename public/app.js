@@ -6,7 +6,6 @@ const els = {
   transcribeView: $("#transcribeView"),
   notesView: $("#notesView"),
   recordBtn: $("#recordBtn"),
-  stopBtn: $("#stopBtn"),
   copyAllBtn: $("#copyAllBtn"),
   clearBtn: $("#clearBtn"),
   transcript: $("#transcript"),
@@ -91,8 +90,7 @@ function renderEntry(text, { live } = {}) {
   if (!entryEl || !els.transcript.contains(entryEl)) {
     els.transcript.innerHTML = "";
     entryEl = document.createElement("div");
-    entryEl.className = "entry expanded";
-    entryEl.addEventListener("click", () => entryEl.classList.toggle("expanded"));
+    entryEl.className = "entry";
     const time = document.createElement("span");
     time.className = "time";
     const body = document.createElement("span");
@@ -102,10 +100,10 @@ function renderEntry(text, { live } = {}) {
     els.transcript.appendChild(entryEl);
   }
   entryEl.classList.toggle("live", !!live);
-  if (live) entryEl.classList.add("expanded");
   entryEl.querySelector(".time").textContent = live ? `${fmtTime()} · Vorschau` : fmtTime();
-  entryEl.querySelector(".entry-body").textContent = text || (live ? "…" : "");
-  entryEl.scrollIntoView({ block: "nearest" });
+  const body = entryEl.querySelector(".entry-body");
+  body.textContent = text || (live ? "…" : "");
+  body.scrollTop = body.scrollHeight;
 }
 
 function getLastText() {
@@ -235,7 +233,6 @@ function renderNotes() {
 
 // ---------- Recording ----------
 els.recordBtn.addEventListener("click", toggleRecord);
-els.stopBtn.addEventListener("click", () => { if (isRecording) stopRecording(); });
 
 async function toggleRecord() {
   if (isLoading) return;
@@ -280,7 +277,7 @@ async function startRecording() {
 
   renderEntry("", { live: true });
   els.recordBtn.classList.add("recording");
-  els.stopBtn.hidden = false;
+  els.recordBtn.setAttribute("aria-label", "Aufnahme beenden");
   setRecordingTimer();
   startWaveform();
   startSegment();
@@ -324,7 +321,7 @@ function cleanupRecording() {
   clearRecordingTimer();
   stopWaveform();
   els.recordBtn.classList.remove("recording", "loading");
-  els.stopBtn.hidden = true;
+  els.recordBtn.setAttribute("aria-label", "Aufnahme starten");
   els.status.textContent = "";
   releaseWakeLock();
   if (audioStream) {
@@ -342,7 +339,6 @@ function stopRecording() {
   segmentTimer = null;
   clearRecordingTimer();
   els.recordBtn.classList.remove("recording");
-  els.stopBtn.hidden = true;
   els.recordBtn.classList.add("loading");
   isLoading = true;
   els.status.textContent = inflight.length ? `Transkribiere… (${inflight.length})` : "Transkribiere…";
@@ -473,7 +469,7 @@ function blobToBase64(blob) {
   });
 }
 
-// ---------- Waveform ring ----------
+// ---------- Waveform bars (above record button) ----------
 function startWaveform() {
   els.waveCanvas.classList.add("active");
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -482,44 +478,51 @@ function startWaveform() {
     const source = audioCtx.createMediaStreamSource(audioStream);
     analyser = audioCtx.createAnalyser();
     analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.55;
     source.connect(analyser);
   } catch (e) {
     console.error("Waveform init error:", e);
     return;
   }
-  const buffer = new Uint8Array(analyser.frequencyBinCount);
+  const buffer = new Uint8Array(analyser.fftSize);
   const ctx = els.waveCanvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
+  const bars = 15;
+  const levels = new Float32Array(bars);
   function resize() {
     const r = els.waveCanvas.getBoundingClientRect();
     els.waveCanvas.width = r.width * dpr;
     els.waveCanvas.height = r.height * dpr;
   }
   resize();
-  const bars = 64;
-  let phase = 0;
   function draw() {
     if (!analyser) return;
-    analyser.getByteFrequencyData(buffer);
+    analyser.getByteTimeDomainData(buffer);
     const w = els.waveCanvas.width, h = els.waveCanvas.height;
-    const cx = w / 2, cy = h / 2;
-    const radius = Math.min(w, h) * 0.34;
+    const gap = 4 * dpr;
+    const barW = Math.max(3 * dpr, (w - gap * (bars - 1)) / bars);
+    const slice = Math.floor(buffer.length / bars);
     ctx.clearRect(0, 0, w, h);
-    phase += 0.02;
     for (let i = 0; i < bars; i++) {
-      const v = buffer[i % buffer.length] / 255;
-      const len = 4 + v * radius * 0.45;
-      const ang = (i / bars) * Math.PI * 2 + phase;
-      const x1 = cx + Math.cos(ang) * radius;
-      const y1 = cy + Math.sin(ang) * radius;
-      const x2 = cx + Math.cos(ang) * (radius + len);
-      const y2 = cy + Math.sin(ang) * (radius + len);
-      ctx.strokeStyle = `rgba(110,168,254,${0.35 + v * 0.6})`;
-      ctx.lineWidth = 2 * dpr;
-      ctx.lineCap = "round";
+      let peak = 0;
+      const start = i * slice;
+      for (let j = 0; j < slice; j++) {
+        const v = Math.abs(buffer[start + j] - 128) / 128;
+        if (v > peak) peak = v;
+      }
+      levels[i] += (peak - levels[i]) * 0.4;
+      const minH = 6 * dpr;
+      const maxH = h * 0.92;
+      const barH = minH + levels[i] * (maxH - minH);
+      const x = i * (barW + gap) + barW / 2;
+      const y1 = (h - barH) / 2;
+      const y2 = y1 + barH;
       ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
+      ctx.lineWidth = barW;
+      ctx.lineCap = "round";
+      ctx.strokeStyle = "rgba(255,255,255,0.88)";
+      ctx.moveTo(x, y1);
+      ctx.lineTo(x, y2);
       ctx.stroke();
     }
     waveRAF = requestAnimationFrame(draw);
