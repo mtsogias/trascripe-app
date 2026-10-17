@@ -427,6 +427,50 @@ editorText.addEventListener("input", () => {
 window.addEventListener("resize", autosize);
 
 backBtn.addEventListener("click", closeEditor);
+
+// Swipe from the left edge to go back, like iOS navigation.
+const EDGE_PX = 28;
+let swipe = null;
+
+editorView.addEventListener("touchstart", (event) => {
+  const t = event.touches[0];
+  if (event.touches.length !== 1 || t.clientX > EDGE_PX || dict || leaving) return;
+  swipe = { x: t.clientX, y: t.clientY, dx: 0, time: event.timeStamp, active: false };
+}, { passive: true });
+
+editorView.addEventListener("touchmove", (event) => {
+  if (!swipe) return;
+  const t = event.touches[0];
+  const dx = t.clientX - swipe.x;
+  const dy = t.clientY - swipe.y;
+  if (!swipe.active) {
+    if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+    if (dx <= Math.abs(dy)) {
+      swipe = null; // vertical scroll, not a swipe
+      return;
+    }
+    swipe.active = true;
+    editorView.style.transition = "none";
+  }
+  event.preventDefault();
+  swipe.dx = Math.max(0, dx);
+  editorView.style.transform = `translateX(${swipe.dx}px)`;
+}, { passive: false });
+
+function endSwipe(event) {
+  if (!swipe) return;
+  const { active, dx, time } = swipe;
+  swipe = null;
+  if (!active) return;
+  // Clearing the inline styles lets the CSS transition animate from the finger position.
+  editorView.style.transition = "";
+  editorView.style.transform = "";
+  const velocity = dx / Math.max(1, event.timeStamp - time);
+  if (dx > editorView.clientWidth * 0.35 || velocity > 0.5) closeEditor();
+}
+
+editorView.addEventListener("touchend", endSwipe);
+editorView.addEventListener("touchcancel", endSwipe);
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeEditor();
 });
