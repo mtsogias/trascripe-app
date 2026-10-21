@@ -235,15 +235,81 @@ button {
   color: var(--text-2);
 }
 
+/* Swipe a card left to reveal its actions (iOS Mail style) */
+.note-swipe {
+  position: relative;
+  margin: 0 0 10px;
+}
+
+/* While swiping, cut the card off at the row's left edge (top/right/bottom keep their shadow). */
+.note-swipe.is-swiping { clip-path: inset(-32px -32px -32px 0); }
+
+.note-actions {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  gap: 8px;
+  width: 160px; /* ACTIONS_PX in app.js */
+  padding-left: 8px;
+  visibility: hidden; /* at rest it would peek through the card's rounded corners */
+}
+
+.note-swipe.is-swiping .note-actions { visibility: visible; }
+
+.note-action {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.note-action svg {
+  width: 22px;
+  height: 22px;
+}
+
+.note-action-move {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.note-action-delete {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Invisible native <select> over "Ordner", so phones show their own picker. */
+.note-move {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  font-size: 16px; /* below 16px iOS zooms in on focus */
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
 .note-card {
   position: relative;
   display: flex;
-  margin: 0 0 10px;
+  margin: 0;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  transition: transform 0.15s var(--ease);
+  transition: transform 0.28s var(--ease);
 }
 
 .note-card:active { transform: scale(0.985); }
@@ -404,6 +470,14 @@ button {
   visibility: visible;
   transition: transform 0.32s var(--ease), visibility 0s;
 }
+
+/* While a finger drags the sidebar, app.js sets its position directly. */
+#app.sidebar-dragging .sidebar {
+  visibility: visible;
+  transition: none;
+}
+
+#app.sidebar-dragging .sidebar-backdrop { transition: none; }
 
 .sidebar-title {
   margin: 0 12px 12px;

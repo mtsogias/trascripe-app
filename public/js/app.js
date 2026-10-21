@@ -52,6 +52,7 @@ const DAY_FMT = new Intl.DateTimeFormat("de-DE", { day: "numeric", month: "short
 const DAY_YEAR_FMT = new Intl.DateTimeFormat("de-DE", { day: "numeric", month: "short", year: "numeric" });
 const FULL_DATE_FMT = new Intl.DateTimeFormat("de-DE", { day: "numeric", month: "long", year: "numeric" });
 const FOLDER_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`;
+const TRASH_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>`;
 const COPY_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
 const START_ERRORS = {
   "mic-denied": "Mikrofon-Zugriff verweigert",
@@ -60,6 +61,8 @@ const START_ERRORS = {
 };
 const CHUNK_ERROR = "Ein Abschnitt konnte nicht transkribiert werden";
 const ACTIVE_FOLDER_KEY = "whisperflow.activeFolder.v1";
+const EDGE_PX = 28;        // edge swipes start this close to the left edge
+const ACTIONS_PX = 160;    // width of a card's swipe actions
 const NEW_FOLDER = "__new";
 
 let recSession = null;     // active recording session
@@ -206,6 +209,83 @@ function autosize() {
   editorText.style.height = `${editorText.scrollHeight}px`;
 }
 
+// Reports a one-finger horizontal drag on target; vertical drags are left to scrolling.
+// start(touch) returns a state object to begin, or null to ignore the touch.
+function onHorizontalDrag(target, { start, move, end }) {
+  let drag = null;
+  target.addEventListener("touchstart", (event) => {
+    drag = null;
+    if (event.touches.length !== 1) return;
+    const t = event.touches[0];
+    const state = start(t, event);
+    if (state) drag = { state, x: t.clientX, y: t.clientY, dx: 0, time: event.timeStamp, active: false };
+  }, { passive: true });
+
+  target.addEventListener("touchmove", (event) => {
+    if (!drag) return;
+    const t = event.touches[0];
+    const dx = t.clientX - drag.x;
+    const dy = t.clientY - drag.y;
+    if (!drag.active) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      if (Math.abs(dx) <= Math.abs(dy)) {
+        drag = null; // vertical: let it scroll
+        return;
+      }
+      drag.active = true;
+    }
+    event.preventDefault();
+    drag.dx = dx;
+    move(drag.state, dx);
+  }, { passive: false });
+
+  const finish = (event) => {
+    if (!drag) return;
+    const { state, active, dx, time } = drag;
+    drag = null;
+    if (active) end(state, dx, dx / Math.max(1, event.timeStamp - time));
+  };
+  target.addEventListener("touchend", finish);
+  target.addEventListener("touchcancel", finish);
+}
+
+// Fills a folder <select>; returns the note's folder (an unknown id counts as no folder).
+function fillFolderSelect(select, folderId) {
+  const folders = store.listFolders();
+  const current = folders.find((f) => f.id === folderId) ?? null;
+  const option = (label, value) => {
+    const o = el("option", undefined, label);
+    o.value = value;
+    return o;
+  };
+  select.replaceChildren(
+    option("Kein Ordner", ""),
+    ...folders.map((f) => option(f.name, f.id)),
+    option("Neuer Ordner …", NEW_FOLDER),
+  );
+  select.value = current ? current.id : "";
+  return current;
+}
+
+// Moves a note after a folder <select> changed; "Neuer Ordner …" asks for a name first.
+function moveNoteFromSelect(noteId, select) {
+  let folderId = select.value || null;
+  if (folderId === NEW_FOLDER) folderId = createFolderFlow()?.id;
+  // undefined = cancelled "new folder"
+  if (folderId !== undefined) safe(() => store.setNoteFolder(noteId, folderId));
+}
+
+function toastDeleted(deleted) {
+  toast("Notiz gelöscht", {
+    actionLabel: "Widerrufen",
+    duration: 5000,
+    onAction: () => {
+      safe(() => store.restoreNote(deleted));
+      renderList();
+    },
+  });
+}
+
 // ---------- List view ----------
 
 function noteCard(note, folderName) {
@@ -227,8 +307,69 @@ function noteCard(note, folderName) {
   copy.innerHTML = COPY_ICON;
 
   card.append(open, copy);
-  return card;
+
+  // Revealed by swiping the card to the left.
+  const actions = el("div", "note-actions");
+  const move = el("label", "note-action note-action-move");
+  move.innerHTML = FOLDER_ICON;
+  const select = el("select", "note-move");
+  select.setAttribute("aria-label", "In Ordner verschieben");
+  move.append(el("span", undefined, "Ordner"), select);
+  const del = el("button", "note-action note-action-delete");
+  del.type = "button";
+  del.innerHTML = TRASH_ICON;
+  del.append(el("span", undefined, "Löschen"));
+  actions.append(move, del);
+
+  const row = el("div", "note-swipe");
+  row.dataset.id = note.id;
+  row.append(actions, card);
+  return row;
 }
+
+// ---------- Card swipe ----------
+
+let openRow = null;     // card row whose actions are showing
+let swipedAt = 0;       // a click right after a swipe is ignored
+
+function setRowOpen(row, open) {
+  const card = row.querySelector(".note-card");
+  card.style.transition = "";
+  card.style.transform = open ? `translateX(-${ACTIONS_PX}px)` : "";
+  row.classList.toggle("is-open", open);
+  if (open) {
+    if (openRow && openRow !== row) setRowOpen(openRow, false);
+    openRow = row;
+    row.classList.add("is-swiping");
+    fillFolderSelect(row.querySelector(".note-move"), store.getNote(row.dataset.id)?.folderId);
+  } else {
+    if (openRow === row) openRow = null;
+    // Hide the actions once the card has slid back over them.
+    setTimeout(() => {
+      if (!row.classList.contains("is-open")) row.classList.remove("is-swiping");
+    }, 300);
+  }
+}
+
+onHorizontalDrag(notesList, {
+  start(t, event) {
+    const row = event.target.closest(".note-swipe");
+    if (!row || event.target.closest(".note-actions") || t.clientX <= EDGE_PX) return null;
+    if (openRow && openRow !== row) setRowOpen(openRow, false);
+    return { row, card: row.querySelector(".note-card"), base: row.classList.contains("is-open") ? -ACTIONS_PX : 0 };
+  },
+  move({ row, card, base }, dx) {
+    row.classList.add("is-swiping");
+    card.style.transition = "none";
+    const x = Math.min(0, Math.max(-ACTIONS_PX * 1.25, base + dx));
+    card.style.transform = `translateX(${x}px)`;
+  },
+  end({ row, base }, dx, velocity) {
+    swipedAt = Date.now();
+    const x = base + dx;
+    setRowOpen(row, velocity < -0.5 || (velocity <= 0.5 && x < -ACTIONS_PX / 2));
+  },
+});
 
 function renderList() {
   const folders = store.listFolders();
@@ -249,6 +390,7 @@ function renderList() {
   const notes = query ? inFolder.filter((n) => n.text.toLowerCase().includes(query)) : inFolder;
 
   emptyState.hidden = all.length > 0;
+  openRow = null;
   notesList.replaceChildren();
   if (all.length > 0 && notes.length === 0) {
     notesList.append(el("p", "empty-text", query ? "Keine Treffer" : "Noch keine Notizen in diesem Ordner"));
@@ -268,14 +410,37 @@ function renderList() {
 }
 
 notesList.addEventListener("click", (event) => {
-  const card = event.target.closest(".note-card");
-  if (!card) return;
+  if (Date.now() - swipedAt < 400) return;
+  const row = event.target.closest(".note-swipe");
+  if (!row) return;
+
+  if (event.target.closest(".note-action-delete")) {
+    const deleted = safe(() => store.deleteNote(row.dataset.id));
+    renderList();
+    if (deleted) toastDeleted(deleted);
+    return;
+  }
+  if (event.target.closest(".note-actions")) return; // the folder <select> handles itself
+  // Tapping an open card only closes it.
+  if (openRow) {
+    setRowOpen(openRow, false);
+    return;
+  }
+
+  const card = row.querySelector(".note-card");
   if (event.target.closest(".note-copy")) {
     const note = store.getNote(card.dataset.id);
     copyText(note ? note.text : "");
   } else if (event.target.closest(".note-open")) {
     openEditor(card.dataset.id);
   }
+});
+
+notesList.addEventListener("change", (event) => {
+  const select = event.target.closest(".note-move");
+  if (!select) return;
+  moveNoteFromSelect(select.closest(".note-swipe").dataset.id, select);
+  renderList();
 });
 
 searchInput.addEventListener("input", renderList);
@@ -338,6 +503,53 @@ function closeSidebar() {
   sidebarBtn.setAttribute("aria-expanded", "false");
   listView.inert = false;
   recordDock.inert = false;
+}
+
+const sidebarOpen = () => app.classList.contains("sidebar-open");
+
+// Follows the finger while the sidebar is dragged; x is its left edge (-width = closed, 0 = open).
+function dragSidebar(x, width) {
+  app.classList.add("sidebar-dragging");
+  sidebar.style.transform = `translateX(${x}px)`;
+  sidebarBackdrop.style.opacity = String(1 + x / width);
+}
+
+// Clearing the inline styles lets the CSS transition animate from the finger position.
+function releaseSidebar() {
+  app.classList.remove("sidebar-dragging");
+  sidebar.style.transform = "";
+  sidebarBackdrop.style.opacity = "";
+}
+
+// Swipe in from the left edge of the list to open the sidebar.
+onHorizontalDrag(listView, {
+  start(t) {
+    if (t.clientX > EDGE_PX || sidebarOpen() || busy() || app.dataset.view !== "list") return null;
+    return { width: sidebar.offsetWidth };
+  },
+  move({ width }, dx) {
+    dragSidebar(Math.min(0, Math.max(-width, dx - width)), width);
+  },
+  end({ width }, dx, velocity) {
+    releaseSidebar();
+    if (velocity > 0.5 || (velocity >= -0.5 && dx > width * 0.35)) openSidebar();
+  },
+});
+
+// Swipe the open sidebar (or the dimmed list) to the left to close it.
+for (const target of [sidebar, sidebarBackdrop]) {
+  onHorizontalDrag(target, {
+    start() {
+      return sidebarOpen() ? { width: sidebar.offsetWidth } : null;
+    },
+    move({ width }, dx) {
+      dragSidebar(Math.min(0, Math.max(-width, dx)), width);
+    },
+    end({ width }, dx, velocity) {
+      releaseSidebar();
+      if (velocity < -0.5 || (velocity <= 0.5 && dx < -width * 0.35)) closeSidebar();
+    },
+  });
 }
 
 function showFolder(id) {
@@ -620,30 +832,14 @@ function openEditor(id) {
   editorView.inert = false;
 }
 
-// Fills the editor's folder picker; an unknown id counts as no folder.
 function renderNoteFolder(folderId) {
-  const folders = store.listFolders();
-  const current = folders.find((f) => f.id === folderId) ?? null;
-  const option = (label, value) => {
-    const o = el("option", undefined, label);
-    o.value = value;
-    return o;
-  };
-  noteFolder.replaceChildren(
-    option("Kein Ordner", ""),
-    ...folders.map((f) => option(f.name, f.id)),
-    option("Neuer Ordner …", NEW_FOLDER),
-  );
-  noteFolder.value = current ? current.id : "";
+  const current = fillFolderSelect(noteFolder, folderId);
   folderPillText.textContent = current ? current.name : "Kein Ordner";
 }
 
 noteFolder.addEventListener("change", () => {
   if (!currentId) return;
-  let folderId = noteFolder.value || null;
-  if (folderId === NEW_FOLDER) folderId = createFolderFlow()?.id;
-  // Cancelled "new folder": put the picker back to the note's folder.
-  if (folderId !== undefined) safe(() => store.setNoteFolder(currentId, folderId));
+  moveNoteFromSelect(currentId, noteFolder);
   renderNoteFolder(store.getNote(currentId)?.folderId);
 });
 
@@ -698,7 +894,6 @@ window.addEventListener("resize", autosize);
 backBtn.addEventListener("click", closeEditor);
 
 // Swipe from the left edge to go back, like iOS navigation.
-const EDGE_PX = 28;
 let swipe = null;
 
 editorView.addEventListener("touchstart", (event) => {
@@ -763,16 +958,7 @@ deleteBtn.addEventListener("click", async () => {
   saveNow();
   const deleted = safe(() => store.deleteNote(currentId));
   endLeave();
-  if (deleted) {
-    toast("Notiz gelöscht", {
-      actionLabel: "Widerrufen",
-      duration: 5000,
-      onAction: () => {
-        safe(() => store.restoreNote(deleted));
-        renderList();
-      },
-    });
-  }
+  if (deleted) toastDeleted(deleted);
 });
 
 // ---------- Dictation into the editor ----------
