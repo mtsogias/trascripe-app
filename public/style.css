@@ -468,6 +468,30 @@ button {
   font-weight: 500;
 }
 
+/* Backup status, pinned to the bottom of the sidebar */
+.backup {
+  margin-top: auto;
+  padding: 16px 12px 0;
+  border-top: 1px solid var(--border);
+}
+
+.backup-status {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.backup-status.is-warning { color: var(--accent); }
+
+.backup-btn {
+  padding: 6px 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.backup-btn:active { opacity: 0.6; }
+
 /* Record dock (bottom centre, behind it a fade) */
 
 .record-dock {

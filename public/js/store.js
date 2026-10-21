@@ -7,6 +7,13 @@ const V1_KEY = "whisperflow.notes.v1";
 const DRAFT_KEY = "whisperflow.draft.v1";
 const FOLDERS_KEY = "whisperflow.folders.v1";
 
+let changeListener = null;
+
+// Called after every write, e.g. to schedule a backup.
+export function onChange(fn) {
+  changeListener = fn;
+}
+
 function newId() {
   if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -29,6 +36,7 @@ function readAll() {
 // Writes may throw (e.g. quota); the UI catches that.
 function writeAll(notes) {
   localStorage.setItem(KEY, JSON.stringify(notes));
+  changeListener?.();
 }
 
 export function migrate() {
@@ -130,6 +138,7 @@ export function listFolders() {
 
 function writeFolders(folders) {
   localStorage.setItem(FOLDERS_KEY, JSON.stringify(folders));
+  changeListener?.();
 }
 
 export function createFolder(name) {
@@ -146,4 +155,20 @@ export function renameFolder(id, name) {
 export function deleteFolder(id) {
   writeAll(readAll().map((n) => (n.folderId === id ? { ...n, folderId: null } : n)));
   writeFolders(listFolders().filter((f) => f.id !== id));
+}
+
+// ---------- Backup ----------
+
+export function exportAll() {
+  return { notes: readAll(), folders: listFolders() };
+}
+
+// Replaces everything on this device with a backup's notes and folders.
+export function replaceAll({ notes, folders }) {
+  const validFolders = (Array.isArray(folders) ? folders : [])
+    .filter((f) => f && typeof f.id === "string" && typeof f.name === "string");
+  const validNotes = (Array.isArray(notes) ? notes : [])
+    .filter((n) => n && typeof n.id === "string" && typeof n.text === "string");
+  writeFolders(validFolders);
+  writeAll(validNotes);
 }

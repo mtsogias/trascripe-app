@@ -1,5 +1,6 @@
 // Whisperflow UI: note list, editor, recording sheet and dictation into the editor.
 import * as store from "./store.js";
+import * as backup from "./backup.js";
 import { TranscriptionSession } from "./session.js";
 import { createWaveform } from "./waveform.js";
 
@@ -16,6 +17,8 @@ const sidebarBtn = $("#sidebarBtn");
 const sidebarBackdrop = $("#sidebarBackdrop");
 const folderList = $("#folderList");
 const newFolderBtn = $("#newFolderBtn");
+const backupStatus = $("#backupStatus");
+const backupBtn = $("#backupBtn");
 const folderMenuBtn = $("#folderMenuBtn");
 const folderMenu = $("#folderMenu");
 const backLabel = $("#backLabel");
@@ -318,6 +321,7 @@ function renderSidebar(folders, notes) {
 
 function openSidebar() {
   closeFolderMenu();
+  renderBackup();
   app.classList.add("sidebar-open");
   sidebar.inert = false;
   sidebar.setAttribute("aria-hidden", "false");
@@ -374,6 +378,81 @@ newFolderBtn.addEventListener("click", () => {
   const folder = createFolderFlow();
   if (folder) showFolder(folder.id);
 });
+
+// ---------- Backup ----------
+
+function noteCount(n) {
+  return n === 1 ? "1 Notiz" : `${n} Notizen`;
+}
+
+function renderBackup() {
+  const { setUp, lastAt, failed } = backup.status();
+  let text = "Notizen sind nur auf diesem Gerät gespeichert";
+  if (setUp && failed) text = "Backup fehlgeschlagen, neuer Versuch folgt";
+  else if (setUp && lastAt) text = `Letztes Backup: ${relTime(lastAt)}`;
+  else if (setUp) text = "Backup läuft …";
+  backupStatus.textContent = text;
+  backupStatus.classList.toggle("is-warning", !setUp || failed);
+  backupBtn.textContent = setUp ? "Aus Backup wiederherstellen" : "Backup einrichten";
+}
+
+// Loads the server backup; null when there is none, undefined after an error (already shown).
+async function loadBackup(password) {
+  try {
+    return await backup.fetchBackup(password);
+  } catch (err) {
+    toast(err.code === "auth" ? "Falsches Backup-Passwort" : "Backup-Server nicht erreichbar");
+    return undefined;
+  }
+}
+
+function applyBackup(data) {
+  if (!safe(() => (store.replaceAll(data), true))) return;
+  setActiveFolder(null);
+  renderList();
+  toast(`${noteCount(data.notes.length)} wiederhergestellt`);
+}
+
+async function setupBackup() {
+  const raw = prompt("Backup-Passwort (BACKUP_PASSWORD aus Vercel)");
+  const password = raw?.trim();
+  if (!password) return;
+  const existing = await loadBackup(password);
+  if (existing === undefined) return;
+
+  if (existing) {
+    const found = `Backup vom ${fullDate(existing.savedAt)} mit ${noteCount(existing.notes.length)} gefunden.`;
+    if (confirm(`${found} Wiederherstellen? Die Notizen auf diesem Gerät werden ersetzt.`)) {
+      applyBackup(existing);
+    } else if (!confirm("Dann wird das Backup durch die Notizen auf diesem Gerät ersetzt. Fortfahren?")) {
+      return;
+    }
+  }
+  backup.enable(password);
+  renderBackup();
+}
+
+async function restoreBackup() {
+  const data = await loadBackup();
+  if (data === undefined) return;
+  if (!data) {
+    toast("Noch kein Backup vorhanden");
+    return;
+  }
+  const found = `Backup vom ${fullDate(data.savedAt)} mit ${noteCount(data.notes.length)} laden?`;
+  if (!confirm(`${found} Die Notizen auf diesem Gerät werden ersetzt.`)) return;
+  closeSidebar();
+  applyBackup(data);
+}
+
+backupBtn.addEventListener("click", () => (backup.status().setUp ? restoreBackup() : setupBackup()));
+
+backup.onStatus((event) => {
+  renderBackup();
+  if (event === "auth") toast("Backup-Passwort stimmt nicht mehr, bitte neu einrichten", { duration: 5000 });
+});
+store.onChange(() => backup.schedule());
+window.addEventListener("online", () => backup.flush());
 
 function closeFolderMenu() {
   folderMenu.hidden = true;
@@ -780,6 +859,7 @@ document.addEventListener("visibilitychange", () => {
   if (recSession) finishRecording();
   if (dict) stopDictation();
   saveNow();
+  backup.flush();
 });
 
 window.addEventListener("pagehide", saveNow);
@@ -790,6 +870,9 @@ try {
   store.migrate();
 } catch {}
 renderList();
+renderBackup();
+backup.schedule(); // catch up on changes a closed app never uploaded
+navigator.storage?.persist?.().catch(() => {});
 
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});

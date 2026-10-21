@@ -5,6 +5,7 @@ const SHELL = [
   "/manifest.webmanifest",
   "/js/app.js",
   "/js/store.js",
+  "/js/backup.js",
   "/js/api.js",
   "/js/session.js",
   "/js/recorder.js",
