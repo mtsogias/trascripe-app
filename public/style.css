@@ -140,6 +140,7 @@ button {
 }
 
 .large-title {
+  flex: 1;
   min-width: 0;
   margin: 0;
   overflow: hidden;
@@ -151,10 +152,11 @@ button {
   line-height: 1.15;
 }
 
-.title-row .icon-btn {
-  flex: none;
-  margin-right: -10px;
-}
+.title-row .icon-btn { flex: none; }
+
+#sidebarBtn { margin-left: -10px; }
+
+#folderMenuBtn { margin-right: -10px; }
 
 .menu {
   position: absolute;
@@ -222,47 +224,6 @@ button {
 .search input::placeholder {
   color: var(--text-2);
   opacity: 1;
-}
-
-/* Folder chips: one scrollable row, edge to edge */
-.folder-bar {
-  display: flex;
-  gap: 8px;
-  margin: 12px -20px 0;
-  padding: 0 20px;
-  scroll-padding-inline: 20px; /* scrollIntoView keeps the side gutter */
-  overflow-x: auto;
-  scrollbar-width: none;
-  -webkit-overflow-scrolling: touch;
-}
-
-.folder-bar::-webkit-scrollbar { display: none; }
-
-.chip {
-  flex: none;
-  max-width: 220px;
-  height: 34px;
-  padding: 0 14px;
-  overflow: hidden;
-  border-radius: 17px;
-  background: var(--surface-2);
-  color: var(--text);
-  font-size: 15px;
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  transition: background-color 0.15s, color 0.15s;
-}
-
-.chip.is-active {
-  background: var(--text);
-  color: var(--bg);
-}
-
-.chip-new {
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--text-2);
 }
 
 .group-title {
@@ -399,6 +360,113 @@ button {
 .icon-btn:active { background: var(--surface-2); }
 
 .icon-btn-danger { color: var(--accent); }
+
+/* Folder sidebar (slides in from the left over a dimmed list) */
+
+.sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 14;
+  background: rgba(0, 0, 0, 0.32);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.32s var(--ease);
+}
+
+#app.sidebar-open .sidebar-backdrop {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sidebar {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  width: min(80vw, 320px);
+  padding: calc(var(--safe-top) + 20px) 12px calc(var(--safe-bottom) + 20px);
+  padding-left: calc(12px + env(safe-area-inset-left, 0px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  box-shadow: 0 0 40px rgba(0, 0, 0, 0.18);
+  transform: translateX(-100%);
+  visibility: hidden;
+  transition: transform 0.32s var(--ease), visibility 0s linear 0.32s;
+}
+
+#app.sidebar-open .sidebar {
+  transform: none;
+  visibility: visible;
+  transition: transform 0.32s var(--ease), visibility 0s;
+}
+
+.sidebar-title {
+  margin: 0 12px 12px;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.folder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.folder-row,
+.sidebar-new {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 46px;
+  padding: 0 12px;
+  border-radius: 12px;
+  text-align: left;
+  font-size: 17px;
+  transition: background-color 0.15s;
+}
+
+.folder-row:active,
+.sidebar-new:active,
+.folder-row.is-active { background: var(--surface-2); }
+
+.folder-row.is-active { font-weight: 600; }
+
+.folder-row svg,
+.sidebar-new svg {
+  flex: none;
+  width: 20px;
+  height: 20px;
+}
+
+.folder-row svg { color: var(--text-2); }
+
+.folder-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-row-count {
+  color: var(--text-2);
+  font-size: 15px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebar-new {
+  margin-top: 8px;
+  color: var(--accent);
+  font-weight: 500;
+}
 
 /* Record dock (bottom centre, behind it a fade) */
 

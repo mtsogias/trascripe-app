@@ -21,6 +21,9 @@
   <section id="listView" class="view view-list is-active">
     <header class="list-header">
       <div class="title-row">
+        <button id="sidebarBtn" class="icon-btn" type="button" aria-label="Ordner anzeigen" aria-controls="sidebar" aria-expanded="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+        </button>
         <h1 id="listTitle" class="large-title">Notizen</h1>
         <button id="folderMenuBtn" class="icon-btn" type="button" aria-label="Ordner bearbeiten" aria-haspopup="menu" aria-expanded="false" hidden>
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
@@ -34,7 +37,6 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
         <input id="searchInput" type="search" placeholder="Suchen" autocomplete="off" enterkeyhint="search" />
       </label>
-      <nav id="folderBar" class="folder-bar" aria-label="Ordner"></nav>
     </header>
     <div id="notesList" class="notes-list"></div>
     <div id="emptyState" class="empty-state" hidden>
@@ -45,6 +47,16 @@
       <p class="empty-text">Tippe auf den Aufnahmeknopf und sprich einfach los.</p>
     </div>
   </section>
+
+  <div id="sidebarBackdrop" class="sidebar-backdrop"></div>
+  <aside id="sidebar" class="sidebar" aria-label="Ordner" aria-hidden="true" inert>
+    <h2 class="sidebar-title">Ordner</h2>
+    <nav id="folderList" class="folder-list"></nav>
+    <button id="newFolderBtn" class="sidebar-new" type="button">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      <span>Neuer Ordner</span>
+    </button>
+  </aside>
 
   <section id="editorView" class="view view-editor" aria-hidden="true" inert>
     <header class="editor-header">

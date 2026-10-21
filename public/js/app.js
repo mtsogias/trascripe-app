@@ -11,7 +11,11 @@ const editorView = $("#editorView");
 const searchInput = $("#searchInput");
 const notesList = $("#notesList");
 const listTitle = $("#listTitle");
-const folderBar = $("#folderBar");
+const sidebar = $("#sidebar");
+const sidebarBtn = $("#sidebarBtn");
+const sidebarBackdrop = $("#sidebarBackdrop");
+const folderList = $("#folderList");
+const newFolderBtn = $("#newFolderBtn");
 const folderMenuBtn = $("#folderMenuBtn");
 const folderMenu = $("#folderMenu");
 const backLabel = $("#backLabel");
@@ -28,6 +32,7 @@ const dictateBtn = $("#dictateBtn");
 const dictateBar = $(".dictate-bar");
 const dictateWaveform = createWaveform($("#dictateWave"));
 const recordBtn = $("#recordBtn");
+const recordDock = $("#recordDock");
 const recordSheet = $("#recordSheet");
 const recordTimer = $("#recordTimer");
 const liveText = $("#liveText");
@@ -43,6 +48,7 @@ const TIME_FMT = new Intl.DateTimeFormat("de-DE", { hour: "2-digit", minute: "2-
 const DAY_FMT = new Intl.DateTimeFormat("de-DE", { day: "numeric", month: "short" });
 const DAY_YEAR_FMT = new Intl.DateTimeFormat("de-DE", { day: "numeric", month: "short", year: "numeric" });
 const FULL_DATE_FMT = new Intl.DateTimeFormat("de-DE", { day: "numeric", month: "long", year: "numeric" });
+const FOLDER_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`;
 const COPY_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
 const START_ERRORS = {
   "mic-denied": "Mikrofon-Zugriff verweigert",
@@ -226,7 +232,8 @@ function renderList() {
   const folder = folders.find((f) => f.id === activeFolder) ?? null;
   if (!folder && activeFolder) setActiveFolder(null);
   const names = new Map(folders.map((f) => [f.id, f.name]));
-  renderFolderBar(folders);
+  const all = store.listNotes();
+  renderSidebar(folders, all);
 
   const title = folder ? folder.name : "Notizen";
   listTitle.textContent = title;
@@ -234,7 +241,6 @@ function renderList() {
   folderMenuBtn.hidden = !folder;
   if (!folder) closeFolderMenu();
 
-  const all = store.listNotes();
   const inFolder = folder ? all.filter((n) => n.folderId === folder.id) : all;
   const query = searchInput.value.trim().toLowerCase();
   const notes = query ? inFolder.filter((n) => n.text.toLowerCase().includes(query)) : inFolder;
@@ -289,31 +295,52 @@ function setActiveFolder(id) {
   } catch {}
 }
 
-function folderChip(label, id, className = "chip") {
-  const chip = el("button", className, label);
-  chip.type = "button";
-  if (id !== undefined) {
-    chip.dataset.id = id ?? "";
-    const active = id === activeFolder;
-    chip.classList.toggle("is-active", active);
-    chip.setAttribute("aria-current", active ? "true" : "false");
-  }
-  return chip;
+function folderRow(name, id, count) {
+  const row = el("button", "folder-row");
+  row.type = "button";
+  row.dataset.id = id ?? "";
+  const active = id === activeFolder;
+  row.classList.toggle("is-active", active);
+  row.setAttribute("aria-current", active ? "true" : "false");
+  row.innerHTML = FOLDER_ICON;
+  row.append(el("span", "folder-row-name", name), el("span", "folder-row-count", String(count)));
+  return row;
 }
 
-function renderFolderBar(folders) {
-  // Keep the horizontal scroll position across re-renders (e.g. while searching).
-  const scroll = folderBar.scrollLeft;
-  folderBar.replaceChildren();
-  if (folders.length > 0) {
-    folderBar.append(folderChip("Alle", null));
-    for (const f of folders) folderBar.append(folderChip(f.name, f.id));
-  }
-  const add = folderChip(folders.length > 0 ? "＋" : "＋ Ordner", undefined, "chip chip-new");
-  add.dataset.action = "new";
-  add.setAttribute("aria-label", "Neuer Ordner");
-  folderBar.append(add);
-  folderBar.scrollLeft = scroll;
+function renderSidebar(folders, notes) {
+  const counts = new Map();
+  for (const n of notes) counts.set(n.folderId, (counts.get(n.folderId) ?? 0) + 1);
+  folderList.replaceChildren(
+    folderRow("Alle Notizen", null, notes.length),
+    ...folders.map((f) => folderRow(f.name, f.id, counts.get(f.id) ?? 0)),
+  );
+}
+
+function openSidebar() {
+  closeFolderMenu();
+  app.classList.add("sidebar-open");
+  sidebar.inert = false;
+  sidebar.setAttribute("aria-hidden", "false");
+  sidebarBtn.setAttribute("aria-expanded", "true");
+  listView.inert = true;
+  recordDock.inert = true;
+}
+
+function closeSidebar() {
+  if (!app.classList.contains("sidebar-open")) return;
+  app.classList.remove("sidebar-open");
+  sidebar.inert = true;
+  sidebar.setAttribute("aria-hidden", "true");
+  sidebarBtn.setAttribute("aria-expanded", "false");
+  listView.inert = false;
+  recordDock.inert = false;
+}
+
+function showFolder(id) {
+  setActiveFolder(id);
+  closeSidebar();
+  renderList();
+  listView.scrollTop = 0;
 }
 
 // Asks for a folder name; null when cancelled, empty or already taken.
@@ -335,18 +362,17 @@ function createFolderFlow() {
   return name ? safe(() => store.createFolder(name)) : null;
 }
 
-folderBar.addEventListener("click", (event) => {
-  const chip = event.target.closest(".chip");
-  if (!chip) return;
-  if (chip.dataset.action === "new") {
-    const folder = createFolderFlow();
-    if (!folder) return;
-    setActiveFolder(folder.id);
-  } else {
-    setActiveFolder(chip.dataset.id || null);
-  }
-  renderList();
-  folderBar.querySelector(".chip.is-active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+sidebarBtn.addEventListener("click", openSidebar);
+sidebarBackdrop.addEventListener("click", closeSidebar);
+
+folderList.addEventListener("click", (event) => {
+  const row = event.target.closest(".folder-row");
+  if (row) showFolder(row.dataset.id || null);
+});
+
+newFolderBtn.addEventListener("click", () => {
+  const folder = createFolderFlow();
+  if (folder) showFolder(folder.id);
 });
 
 function closeFolderMenu() {
@@ -638,6 +664,7 @@ editorView.addEventListener("touchcancel", endSwipe);
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   closeFolderMenu();
+  closeSidebar();
   closeEditor();
 });
 
