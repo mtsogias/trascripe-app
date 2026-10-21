@@ -10,12 +10,19 @@ const listView = $("#listView");
 const editorView = $("#editorView");
 const searchInput = $("#searchInput");
 const notesList = $("#notesList");
+const listTitle = $("#listTitle");
+const folderBar = $("#folderBar");
+const folderMenuBtn = $("#folderMenuBtn");
+const folderMenu = $("#folderMenu");
+const backLabel = $("#backLabel");
 const emptyState = $("#emptyState");
 const backBtn = $("#backBtn");
 const copyBtn = $("#copyBtn");
 const shareBtn = $("#shareBtn");
 const deleteBtn = $("#deleteBtn");
-const editorMeta = $("#editorMeta");
+const editorDate = $("#editorDate");
+const noteFolder = $("#noteFolder");
+const folderPillText = $("#folderPillText");
 const editorText = $("#editorText");
 const dictateBtn = $("#dictateBtn");
 const dictateBar = $(".dictate-bar");
@@ -43,6 +50,8 @@ const START_ERRORS = {
   unsupported: "Aufnahme wird nicht unterstützt",
 };
 const CHUNK_ERROR = "Ein Abschnitt konnte nicht transkribiert werden";
+const ACTIVE_FOLDER_KEY = "whisperflow.activeFolder.v1";
+const NEW_FOLDER = "__new";
 
 let recSession = null;     // active recording session
 let recNoteId = null;      // note created for the current recording
@@ -55,6 +64,7 @@ let timerId = null;
 let startedAt = 0;
 let wakeLock = null;
 let toastTimer = null;
+let activeFolder = loadActiveFolder(); // folder id shown in the list; null = "Alle"
 
 const busy = () => recSession !== null || dict !== null;
 
@@ -189,7 +199,7 @@ function autosize() {
 
 // ---------- List view ----------
 
-function noteCard(note) {
+function noteCard(note, folderName) {
   const card = el("article", "note-card");
   card.dataset.id = note.id;
 
@@ -199,6 +209,7 @@ function noteCard(note) {
   time.dateTime = note.updatedAt;
   const meta = el("p", "note-meta");
   meta.append(time, el("span", "note-dot", "·"), el("span", "note-words", wordLabel(note.text)));
+  if (folderName) meta.append(el("span", "note-dot", "·"), el("span", "note-folder", folderName));
   open.append(el("p", "note-preview", note.text), meta);
 
   const copy = el("button", "note-copy icon-btn");
@@ -211,14 +222,27 @@ function noteCard(note) {
 }
 
 function renderList() {
+  const folders = store.listFolders();
+  const folder = folders.find((f) => f.id === activeFolder) ?? null;
+  if (!folder && activeFolder) setActiveFolder(null);
+  const names = new Map(folders.map((f) => [f.id, f.name]));
+  renderFolderBar(folders);
+
+  const title = folder ? folder.name : "Notizen";
+  listTitle.textContent = title;
+  backLabel.textContent = title;
+  folderMenuBtn.hidden = !folder;
+  if (!folder) closeFolderMenu();
+
   const all = store.listNotes();
+  const inFolder = folder ? all.filter((n) => n.folderId === folder.id) : all;
   const query = searchInput.value.trim().toLowerCase();
-  const notes = query ? all.filter((n) => n.text.toLowerCase().includes(query)) : all;
+  const notes = query ? inFolder.filter((n) => n.text.toLowerCase().includes(query)) : inFolder;
 
   emptyState.hidden = all.length > 0;
   notesList.replaceChildren();
   if (all.length > 0 && notes.length === 0) {
-    notesList.append(el("p", "empty-text", "Keine Treffer"));
+    notesList.append(el("p", "empty-text", query ? "Keine Treffer" : "Noch keine Notizen in diesem Ordner"));
     return;
   }
 
@@ -230,7 +254,7 @@ function renderList() {
       label = next;
       notesList.append(el("h2", "group-title", label));
     }
-    notesList.append(noteCard(note));
+    notesList.append(noteCard(note, folder ? null : names.get(note.folderId)));
   }
 }
 
@@ -246,6 +270,118 @@ notesList.addEventListener("click", (event) => {
 });
 
 searchInput.addEventListener("input", renderList);
+
+// ---------- Folders ----------
+
+function loadActiveFolder() {
+  try {
+    return localStorage.getItem(ACTIVE_FOLDER_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+function setActiveFolder(id) {
+  activeFolder = id;
+  try {
+    if (id) localStorage.setItem(ACTIVE_FOLDER_KEY, id);
+    else localStorage.removeItem(ACTIVE_FOLDER_KEY);
+  } catch {}
+}
+
+function folderChip(label, id, className = "chip") {
+  const chip = el("button", className, label);
+  chip.type = "button";
+  if (id !== undefined) {
+    chip.dataset.id = id ?? "";
+    const active = id === activeFolder;
+    chip.classList.toggle("is-active", active);
+    chip.setAttribute("aria-current", active ? "true" : "false");
+  }
+  return chip;
+}
+
+function renderFolderBar(folders) {
+  // Keep the horizontal scroll position across re-renders (e.g. while searching).
+  const scroll = folderBar.scrollLeft;
+  folderBar.replaceChildren();
+  if (folders.length > 0) {
+    folderBar.append(folderChip("Alle", null));
+    for (const f of folders) folderBar.append(folderChip(f.name, f.id));
+  }
+  const add = folderChip(folders.length > 0 ? "＋" : "＋ Ordner", undefined, "chip chip-new");
+  add.dataset.action = "new";
+  add.setAttribute("aria-label", "Neuer Ordner");
+  folderBar.append(add);
+  folderBar.scrollLeft = scroll;
+}
+
+// Asks for a folder name; null when cancelled, empty or already taken.
+function askFolderName(message, current = "", exceptId = null) {
+  const raw = prompt(message, current);
+  if (raw === null) return null;
+  const name = raw.trim().slice(0, 40);
+  if (!name) return null;
+  const lower = name.toLowerCase();
+  if (store.listFolders().some((f) => f.id !== exceptId && f.name.toLowerCase() === lower)) {
+    toast("Diesen Ordner gibt es schon");
+    return null;
+  }
+  return name;
+}
+
+function createFolderFlow() {
+  const name = askFolderName("Name des neuen Ordners");
+  return name ? safe(() => store.createFolder(name)) : null;
+}
+
+folderBar.addEventListener("click", (event) => {
+  const chip = event.target.closest(".chip");
+  if (!chip) return;
+  if (chip.dataset.action === "new") {
+    const folder = createFolderFlow();
+    if (!folder) return;
+    setActiveFolder(folder.id);
+  } else {
+    setActiveFolder(chip.dataset.id || null);
+  }
+  renderList();
+  folderBar.querySelector(".chip.is-active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+});
+
+function closeFolderMenu() {
+  folderMenu.hidden = true;
+  folderMenuBtn.setAttribute("aria-expanded", "false");
+}
+
+folderMenuBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const open = folderMenu.hidden;
+  folderMenu.hidden = !open;
+  folderMenuBtn.setAttribute("aria-expanded", String(open));
+});
+
+document.addEventListener("click", (event) => {
+  if (!folderMenu.hidden && !folderMenu.contains(event.target)) closeFolderMenu();
+});
+
+folderMenu.addEventListener("click", (event) => {
+  const action = event.target.closest("[data-action]")?.dataset.action;
+  if (!action) return;
+  closeFolderMenu();
+  const folder = store.listFolders().find((f) => f.id === activeFolder);
+  if (!folder) return;
+
+  if (action === "rename") {
+    const name = askFolderName("Ordner umbenennen", folder.name, folder.id);
+    if (name) safe(() => store.renameFolder(folder.id, name));
+  } else if (action === "delete") {
+    if (!confirm(`Ordner „${folder.name}“ löschen? Die Notizen darin bleiben unter „Alle“ erhalten.`)) return;
+    safe(() => store.deleteFolder(folder.id));
+    setActiveFolder(null);
+  }
+  renderList();
+});
 
 // ---------- Recording (new note) ----------
 
@@ -310,7 +446,7 @@ function onRecordingText(session, full) {
   if (recNoteId) {
     safe(() => store.updateNote(recNoteId, full));
   } else {
-    recNoteId = safe(() => store.createNote(full))?.id ?? null;
+    recNoteId = safe(() => store.createNote(full, activeFolder))?.id ?? null;
   }
 }
 
@@ -345,7 +481,7 @@ async function finishRecording() {
   if (text) {
     let id = noteId;
     if (id) safe(() => store.updateNote(id, text));
-    else id = safe(() => store.createNote(text))?.id ?? null;
+    else id = safe(() => store.createNote(text, activeFolder))?.id ?? null;
     renderList();
     if (id) openEditor(id);
   } else {
@@ -368,7 +504,8 @@ function openEditor(id) {
   }
   currentId = id;
   editorText.value = note.text;
-  editorMeta.textContent = fullDate(note.createdAt);
+  editorDate.textContent = fullDate(note.createdAt);
+  renderNoteFolder(note.folderId);
   autosize();
   editorView.scrollTop = 0;
   app.dataset.view = "editor";
@@ -377,6 +514,33 @@ function openEditor(id) {
   editorView.setAttribute("aria-hidden", "false");
   editorView.inert = false;
 }
+
+// Fills the editor's folder picker; an unknown id counts as no folder.
+function renderNoteFolder(folderId) {
+  const folders = store.listFolders();
+  const current = folders.find((f) => f.id === folderId) ?? null;
+  const option = (label, value) => {
+    const o = el("option", undefined, label);
+    o.value = value;
+    return o;
+  };
+  noteFolder.replaceChildren(
+    option("Kein Ordner", ""),
+    ...folders.map((f) => option(f.name, f.id)),
+    option("Neuer Ordner …", NEW_FOLDER),
+  );
+  noteFolder.value = current ? current.id : "";
+  folderPillText.textContent = current ? current.name : "Kein Ordner";
+}
+
+noteFolder.addEventListener("change", () => {
+  if (!currentId) return;
+  let folderId = noteFolder.value || null;
+  if (folderId === NEW_FOLDER) folderId = createFolderFlow()?.id;
+  // Cancelled "new folder": put the picker back to the note's folder.
+  if (folderId !== undefined) safe(() => store.setNoteFolder(currentId, folderId));
+  renderNoteFolder(store.getNote(currentId)?.folderId);
+});
 
 function hideEditor() {
   app.dataset.view = "list";
@@ -472,7 +636,9 @@ function endSwipe(event) {
 editorView.addEventListener("touchend", endSwipe);
 editorView.addEventListener("touchcancel", endSwipe);
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeEditor();
+  if (event.key !== "Escape") return;
+  closeFolderMenu();
+  closeEditor();
 });
 
 copyBtn.addEventListener("click", () => copyText(editorText.value));

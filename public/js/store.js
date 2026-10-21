@@ -1,9 +1,11 @@
-// Notes persistence in localStorage.
-// Note = { id, text, createdAt, updatedAt }
+// Notes and folders persistence in localStorage.
+// Note = { id, text, createdAt, updatedAt, folderId? }
+// Folder = { id, name, createdAt }
 
 const KEY = "whisperflow.notes.v2";
 const V1_KEY = "whisperflow.notes.v1";
 const DRAFT_KEY = "whisperflow.draft.v1";
+const FOLDERS_KEY = "whisperflow.folders.v1";
 
 function newId() {
   if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
@@ -70,9 +72,9 @@ export function getNote(id) {
   return readAll().find((n) => n.id === id) ?? null;
 }
 
-export function createNote(text = "") {
+export function createNote(text = "", folderId = null) {
   const now = new Date().toISOString();
-  const note = { id: newId(), text, createdAt: now, updatedAt: now };
+  const note = { id: newId(), text, createdAt: now, updatedAt: now, folderId };
   writeAll([...readAll(), note]);
   return note;
 }
@@ -101,6 +103,47 @@ export function deleteNote(id) {
 export function restoreNote(note) {
   const notes = readAll().filter((n) => n.id !== note.id);
   const restored = { ...note };
+  // Its folder may have been deleted since.
+  if (!listFolders().some((f) => f.id === restored.folderId)) restored.folderId = null;
   writeAll([...notes, restored]);
   return restored;
+}
+
+// Moving a note keeps updatedAt, so the list order does not change.
+export function setNoteFolder(id, folderId) {
+  const notes = readAll();
+  const index = notes.findIndex((n) => n.id === id);
+  if (index < 0) return null;
+
+  notes[index] = { ...notes[index], folderId };
+  writeAll(notes);
+  return notes[index];
+}
+
+// ---------- Folders ----------
+
+export function listFolders() {
+  const folders = readJson(FOLDERS_KEY);
+  if (!Array.isArray(folders)) return [];
+  return folders.filter((f) => f && typeof f.id === "string" && typeof f.name === "string");
+}
+
+function writeFolders(folders) {
+  localStorage.setItem(FOLDERS_KEY, JSON.stringify(folders));
+}
+
+export function createFolder(name) {
+  const folder = { id: newId(), name, createdAt: new Date().toISOString() };
+  writeFolders([...listFolders(), folder]);
+  return folder;
+}
+
+export function renameFolder(id, name) {
+  writeFolders(listFolders().map((f) => (f.id === id ? { ...f, name } : f)));
+}
+
+// Notes in the folder are kept and lose their folder.
+export function deleteFolder(id) {
+  writeAll(readAll().map((n) => (n.folderId === id ? { ...n, folderId: null } : n)));
+  writeFolders(listFolders().filter((f) => f.id !== id));
 }
