@@ -348,6 +348,16 @@ button {
 
 .note-dot { opacity: 0.6; }
 
+.note-meeting {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.note-meeting svg { width: 14px; height: 14px; }
+
 .note-folder {
   max-width: 160px;
   overflow: hidden;

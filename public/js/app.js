@@ -83,6 +83,8 @@ const ACTIVE_FOLDER_KEY = "whisperflow.activeFolder.v1";
 const EDGE_PX = 28;        // edge swipes start this close to the left edge
 const ACTIONS_PX = 160;    // width of a card's swipe actions
 const NEW_FOLDER = "__new";
+const MEETINGS = "__meetings"; // sidebar view of all meeting notes, across folders
+const PEOPLE_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3 20a6 6 0 0 1 12 0"/><circle cx="17" cy="9" r="2.6"/><path d="M16 14.2a5 5 0 0 1 6 4.8"/></svg>`;
 
 let recSession = null;     // active recording session (normal note)
 let recMeeting = null;     // active meeting recording
@@ -97,7 +99,8 @@ let timerId = null;
 let startedAt = 0;
 let wakeLock = null;
 let toastTimer = null;
-let activeFolder = loadActiveFolder(); // folder id shown in the list; null = "Alle"
+let activeFolder = loadActiveFolder(); // folder id shown in the list; null = "Alle", MEETINGS = meetings view
+const newNoteFolder = () => (activeFolder === MEETINGS ? null : activeFolder);
 
 const busy = () => recSession !== null || recMeeting !== null || dict !== null;
 
@@ -326,7 +329,7 @@ function toastDeleted(deleted) {
 
 // ---------- List view ----------
 
-function noteCard(note, folderName) {
+function noteCard(note, folderName, showMeeting = true) {
   const card = el("article", "note-card");
   card.dataset.id = note.id;
 
@@ -336,6 +339,12 @@ function noteCard(note, folderName) {
   time.dateTime = note.updatedAt;
   const meta = el("p", "note-meta");
   meta.append(time, el("span", "note-dot", "·"), el("span", "note-words", wordLabel(note.text)));
+  if (note.meeting && showMeeting) {
+    const badge = el("span", "note-meeting");
+    badge.innerHTML = PEOPLE_ICON;
+    badge.append("Meeting");
+    meta.append(el("span", "note-dot", "·"), badge);
+  }
   if (folderName) meta.append(el("span", "note-dot", "·"), el("span", "note-folder", folderName));
   open.append(el("p", "note-preview", note.text), meta);
 
@@ -412,17 +421,18 @@ onHorizontalDrag(notesList, {
 function renderList() {
   const folders = store.listFolders();
   const folder = folders.find((f) => f.id === activeFolder) ?? null;
-  if (!folder && activeFolder) setActiveFolder(null);
+  if (!folder && activeFolder && activeFolder !== MEETINGS) setActiveFolder(null);
+  const meetingsView = activeFolder === MEETINGS;
   const names = new Map(folders.map((f) => [f.id, f.name]));
   const all = store.listNotes();
   renderSidebar(folders, all);
 
-  const title = folder ? folder.name : "Notizen";
+  const title = folder ? folder.name : meetingsView ? "Meetings" : "Notizen";
   listTitle.textContent = title;
   backLabel.textContent = title;
   for (const item of folderMenu.querySelectorAll("[data-folder-only]")) item.hidden = !folder;
 
-  const inFolder = folder ? all.filter((n) => n.folderId === folder.id) : all;
+  const inFolder = folder ? all.filter((n) => n.folderId === folder.id) : meetingsView ? all.filter((n) => n.meeting) : all;
   const query = searchInput.value.trim().toLowerCase();
   const notes = query ? inFolder.filter((n) => n.text.toLowerCase().includes(query)) : inFolder;
 
@@ -430,7 +440,8 @@ function renderList() {
   openRow = null;
   notesList.replaceChildren();
   if (all.length > 0 && notes.length === 0) {
-    notesList.append(el("p", "empty-text", query ? "Keine Treffer" : "Noch keine Notizen in diesem Ordner"));
+    const empty = meetingsView ? "Noch keine Meetings" : "Noch keine Notizen in diesem Ordner";
+    notesList.append(el("p", "empty-text", query ? "Keine Treffer" : empty));
     return;
   }
 
@@ -442,7 +453,7 @@ function renderList() {
       label = next;
       notesList.append(el("h2", "group-title", label));
     }
-    notesList.append(noteCard(note, folder ? null : names.get(note.folderId)));
+    notesList.append(noteCard(note, folder ? null : names.get(note.folderId), !meetingsView));
   }
 }
 
@@ -500,14 +511,14 @@ function setActiveFolder(id) {
   } catch {}
 }
 
-function folderRow(name, id, count) {
+function folderRow(name, id, count, icon = FOLDER_ICON) {
   const row = el("button", "folder-row");
   row.type = "button";
   row.dataset.id = id ?? "";
   const active = id === activeFolder;
   row.classList.toggle("is-active", active);
   row.setAttribute("aria-current", active ? "true" : "false");
-  row.innerHTML = FOLDER_ICON;
+  row.innerHTML = icon;
   row.append(el("span", "folder-row-name", name), el("span", "folder-row-count", String(count)));
   return row;
 }
@@ -515,8 +526,10 @@ function folderRow(name, id, count) {
 function renderSidebar(folders, notes) {
   const counts = new Map();
   for (const n of notes) counts.set(n.folderId, (counts.get(n.folderId) ?? 0) + 1);
+  const meetings = notes.filter((n) => n.meeting).length;
   folderList.replaceChildren(
     folderRow("Alle Notizen", null, notes.length),
+    ...(meetings || activeFolder === MEETINGS ? [folderRow("Meetings", MEETINGS, meetings, PEOPLE_ICON)] : []),
     ...folders.map((f) => folderRow(f.name, f.id, counts.get(f.id) ?? 0)),
   );
 }
@@ -823,7 +836,7 @@ async function startRecording() {
 // Persist as we go so a crash mid-recording keeps the text.
 function saveRecordingText(text) {
   if (store.getNote(recNoteId)) safe(() => store.updateNote(recNoteId, text));
-  else safe(() => store.createNote(text, activeFolder, recNoteId));
+  else safe(() => store.createNote(text, newNoteFolder(), recNoteId));
 }
 
 function onRecordingText(session, full) {
@@ -867,7 +880,7 @@ async function finishRecording(reason = "stop button") {
   const exists = !!store.getNote(noteId);
   if (text) {
     if (exists) safe(() => store.updateNote(noteId, text));
-    else safe(() => store.createNote(text, activeFolder, noteId));
+    else safe(() => store.createNote(text, newNoteFolder(), noteId));
     renderList();
     openEditor(noteId);
   } else {
@@ -942,7 +955,7 @@ async function finishMeeting(reason = "stop button") {
   closeSheet();
   diag.end(`${reason}, meeting ${Math.round(rec.durationSec)} s`);
 
-  safe(() => store.createNote(meetingPlaceholder(rec.durationSec), activeFolder, noteId));
+  safe(() => store.createNote(meetingPlaceholder(rec.durationSec), newNoteFolder(), noteId, { meeting: true }));
   renderList();
   openEditor(noteId);
   meeting.retry({ noteId });
@@ -1241,7 +1254,7 @@ function applyMeeting(m, text, speakers) {
     if (old.includes(meeting.PLACEHOLDER)) return old.replace(meeting.PLACEHOLDER, text);
     return `${old.trimEnd()}\n\n${text}`;
   });
-  if (speakers.length) safe(() => store.setNoteFields(m.noteId, { speakers }));
+  safe(() => store.setNoteFields(m.noteId, speakers.length ? { meeting: true, speakers } : { meeting: true }));
   if (currentId === m.noteId) renderSpeakers();
   return true;
 }

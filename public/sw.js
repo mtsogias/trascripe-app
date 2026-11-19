@@ -1,4 +1,4 @@
-const CACHE = "whisperflow-v22";
+const CACHE = "whisperflow-v23";
 const SHELL = [
   "/",
   "/style.css",
