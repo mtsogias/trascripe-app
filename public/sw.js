@@ -1,4 +1,4 @@
-const CACHE = "whisperflow-v20";
+const CACHE = "whisperflow-v22";
 const SHELL = [
   "/",
   "/style.css",
@@ -12,6 +12,13 @@ const SHELL = [
   "/js/pcm-worklet.js",
   "/js/vad.js",
   "/js/audio-utils.js",
+  "/js/diag.js",
+  "/js/settings.js",
+  "/js/idb.js",
+  "/js/pending.js",
+  "/js/meeting.js",
+  "/js/meeting-merge.js",
+  "/js/adpcm.js",
   "/js/waveform.js",
   "/icons/icon-192.png",
   "/icons/apple-touch-icon.png",

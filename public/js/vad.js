@@ -33,11 +33,40 @@ export class Segmenter {
     this._level = 0;
     this._floor = null;
     this._carry = new Float32Array(0);
+    this.dropped = 0; // segments discarded for too little speech
+    this._total = 0; // frames processed since start, for segment positions
+    this._resetStats();
     this._reset();
   }
 
   get level() {
     return this._level;
+  }
+
+  get floor() {
+    return this._floor;
+  }
+
+  get threshold() {
+    return Math.max(this.opts.absThreshold, (this._floor ?? 0) * this.opts.floorRatio);
+  }
+
+  // Frame stats since the last call (for diagnostics), then resets them.
+  takeStats() {
+    const s = this._stats;
+    const out = {
+      frames: s.frames,
+      speech: s.speech,
+      avgRms: s.frames ? s.sum / s.frames : 0,
+      maxRms: s.max,
+      zero: s.zero,
+    };
+    this._resetStats();
+    return out;
+  }
+
+  _resetStats() {
+    this._stats = { frames: 0, speech: 0, sum: 0, max: 0, zero: 0 };
   }
 
   // Returns completed, already gated segments.
@@ -71,11 +100,19 @@ export class Segmenter {
     const o = this.opts;
     const r = rms(frame);
     this._level = r;
+    this._total++;
 
     if (this._floor === null) this._floor = Math.max(r, MIN_FLOOR);
     const floor = this._floor;
     const threshold = Math.max(o.absThreshold, floor * o.floorRatio);
     const isSpeech = r > threshold;
+
+    const st = this._stats;
+    st.frames++;
+    st.sum += r;
+    if (r > st.max) st.max = r;
+    if (r === 0) st.zero++;
+    if (isSpeech) st.speech++;
 
     if (r < floor) this._floor = floor * 0.9 + r * 0.1;
     else if (!isSpeech) this._floor = floor * 0.98 + r * 0.02;
@@ -118,14 +155,17 @@ export class Segmenter {
     const dropFrames = Math.max(0, Math.floor((this._silenceRunMs - o.tailKeepMs) / FRAME_MS));
     const frames = this._frames.slice(0, this._frames.length - dropFrames);
     const speechMs = this._speechFrames * FRAME_MS;
+    const startMs = (this._total - this._frames.length) * FRAME_MS;
     const seg =
       speechMs >= o.minSpeechMs
         ? {
             samples: concatFloat32(frames),
             speechMs,
+            startMs,
             durationMs: frames.length * FRAME_MS,
           }
         : null;
+    if (!seg) this.dropped++;
     this._reset();
     return seg;
   }

@@ -1,9 +1,13 @@
 import { Segmenter, SAMPLE_RATE } from "./vad.js";
 import { Resampler } from "./audio-utils.js";
+import * as diag from "./diag.js";
 
 const WORKLET_URL = "/js/pcm-worklet.js";
 const SCRIPT_BLOCK_SIZE = 4096;
 const FLUSH_TIMEOUT_MS = 300;
+const HEARTBEAT_MS = 10000;
+
+const r4 = (n) => (typeof n === "number" ? Math.round(n * 10000) / 10000 : n);
 
 function recorderError(message, code) {
   const err = new Error(message);
@@ -12,8 +16,10 @@ function recorderError(message, code) {
 }
 
 export class Recorder {
-  constructor({ onSegment, onError } = {}) {
+  // onPcm (optional) receives every 16 kHz sample block, e.g. to keep the whole recording.
+  constructor({ onSegment, onError, onPcm } = {}) {
     this.onSegment = onSegment;
+    this.onPcm = onPcm;
     this.onError = onError;
     this._seq = 0;
     this._running = false;
@@ -27,6 +33,9 @@ export class Recorder {
     this._resampler = null;
     this._segmenter = null;
     this._onFlushed = null;
+    this._heartbeat = null;
+    this._blocks = 0;
+    this._lastCtxTime = 0;
   }
 
   get analyser() {
@@ -63,6 +72,7 @@ export class Recorder {
       throw err;
     }
     this._running = true;
+    this._startHeartbeat();
   }
 
   stop() {
@@ -91,12 +101,29 @@ export class Recorder {
     this._mute.connect(ctx.destination);
     this._source.connect(this._analyser);
 
-    stream.getAudioTracks()[0].onended = () => {
+    const track = stream.getAudioTracks()[0];
+    diag.log("mic", {
+      label: track?.label,
+      settings: track?.getSettings?.(),
+      ctxRate: ctx.sampleRate,
+      capture: this._capture.port ? "worklet" : "script",
+    });
+    track.onended = () => {
+      diag.log("track ended");
       if (this._running) this._report(new Error("mic-ended"));
     };
+    track.onmute = () => diag.log("track muted");
+    track.onunmute = () => diag.log("track unmuted");
     ctx.onstatechange = () => {
+      diag.log("ctx state", { state: ctx.state });
       if (this._running && (ctx.state === "suspended" || ctx.state === "interrupted")) {
-        ctx.resume().catch(() => this._report(new Error("mic-interrupted")));
+        ctx
+          .resume()
+          .then(() => diag.log("ctx resume ok", { state: ctx.state }))
+          .catch((err) => {
+            diag.log("ctx resume failed", { err: String(err) });
+            this._report(new Error("mic-interrupted"));
+          });
       }
     };
   }
@@ -129,11 +156,21 @@ export class Recorder {
 
   _onPcm(samples) {
     if (!this._segmenter) return;
-    this._emit(this._segmenter.push(this._resampler.process(samples)));
+    this._blocks++;
+    const pcm = this._resampler.process(samples);
+    if (this.onPcm) {
+      try {
+        this.onPcm(pcm);
+      } catch (err) {
+        console.error("onPcm failed", err);
+      }
+    }
+    this._emit(this._segmenter.push(pcm));
   }
 
   _emit(segments) {
     for (const seg of segments) {
+      diag.log("segment", { seq: this._seq, ms: seg.durationMs, speechMs: seg.speechMs });
       try {
         this.onSegment?.({ ...seg, seq: this._seq++ });
       } catch (err) {
@@ -164,8 +201,39 @@ export class Recorder {
     });
   }
 
+  // Logs every HEARTBEAT_MS whether audio is still arriving and what the VAD hears.
+  _startHeartbeat() {
+    this._lastCtxTime = this._ctx?.currentTime ?? 0;
+    this._heartbeat = setInterval(() => {
+      const ctx = this._ctx;
+      const seg = this._segmenter;
+      if (!ctx || !seg) return;
+      const track = this._stream?.getAudioTracks()[0];
+      const st = seg.takeStats();
+      diag.log("beat", {
+        blocks: this._blocks,
+        ctx: ctx.state,
+        ctxAdv: r4(ctx.currentTime - this._lastCtxTime),
+        track: track ? `${track.readyState}${track.muted ? "/muted" : ""}${track.enabled ? "" : "/disabled"}` : "none",
+        frames: st.frames,
+        speech: st.speech,
+        zero: st.zero,
+        avg: r4(st.avgRms),
+        max: r4(st.maxRms),
+        floor: r4(seg.floor),
+        thr: r4(seg.threshold),
+        dropped: seg.dropped,
+        vis: document.visibilityState,
+      });
+      this._blocks = 0;
+      this._lastCtxTime = ctx.currentTime;
+    }, HEARTBEAT_MS);
+  }
+
   async _finish() {
     this._running = false;
+    clearInterval(this._heartbeat);
+    this._heartbeat = null;
     if (this._capture?.port) await this._flushWorklet(this._capture);
     await this._teardown();
     const last = this._segmenter?.flush() ?? [];
@@ -175,6 +243,8 @@ export class Recorder {
   }
 
   async _teardown() {
+    clearInterval(this._heartbeat);
+    this._heartbeat = null;
     for (const node of [this._source, this._capture, this._mute]) node?.disconnect();
     this._stream?.getTracks().forEach((track) => track.stop());
     await this._ctx?.close().catch(() => {});

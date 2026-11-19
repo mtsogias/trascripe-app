@@ -57,6 +57,10 @@ export class Resampler {
 }
 
 export function encodeWav(samples, sampleRate = 16000) {
+  return new Blob([encodeWavBytes(samples, sampleRate)], { type: "audio/wav" });
+}
+
+export function encodeWavBytes(samples, sampleRate = 16000) {
   const dataSize = samples.length * 2;
   const view = new DataView(new ArrayBuffer(44 + dataSize));
   writeString(view, 0, "RIFF");
@@ -76,7 +80,7 @@ export function encodeWav(samples, sampleRate = 16000) {
     const s = Math.max(-1, Math.min(1, samples[i]));
     view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
   }
-  return new Blob([view.buffer], { type: "audio/wav" });
+  return new Uint8Array(view.buffer);
 }
 
 export function concatFloat32(arrays) {

@@ -25,12 +25,13 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
         </button>
         <h1 id="listTitle" class="large-title">Notizen</h1>
-        <button id="folderMenuBtn" class="icon-btn" type="button" aria-label="Ordner bearbeiten" aria-haspopup="menu" aria-expanded="false" hidden>
+        <button id="folderMenuBtn" class="icon-btn" type="button" aria-label="Mehr" aria-haspopup="menu" aria-expanded="false">
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
         </button>
         <div id="folderMenu" class="menu" role="menu" hidden>
-          <button type="button" role="menuitem" data-action="rename">Umbenennen</button>
-          <button type="button" role="menuitem" data-action="delete" class="menu-danger">Ordner löschen</button>
+          <button type="button" role="menuitem" data-action="settings">Einstellungen</button>
+          <button type="button" role="menuitem" data-action="rename" data-folder-only>Ordner umbenennen</button>
+          <button type="button" role="menuitem" data-action="delete" data-folder-only class="menu-danger">Ordner löschen</button>
         </div>
       </div>
       <label class="search">
@@ -59,6 +60,7 @@
     <div class="backup">
       <p id="backupStatus" class="backup-status"></p>
       <button id="backupBtn" class="backup-btn" type="button"></button>
+      <button id="diagBtn" class="diag-btn" type="button">Aufnahme-Protokoll kopieren</button>
     </div>
   </aside>
 
@@ -69,6 +71,9 @@
         <span id="backLabel">Notizen</span>
       </button>
       <div class="editor-actions">
+        <button id="summaryBtn" class="icon-btn" type="button" aria-label="Zusammenfassen">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
+        </button>
         <button id="copyBtn" class="icon-btn" type="button" aria-label="Kopieren">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
         </button>
@@ -89,6 +94,11 @@
         <select id="noteFolder" aria-label="Ordner"></select>
       </label>
     </div>
+    <div id="noteBanner" class="note-banner" hidden>
+      <span id="noteBannerText" class="note-banner-text"></span>
+      <button id="noteBannerBtn" class="note-banner-btn" type="button">Erneut senden</button>
+    </div>
+    <div id="speakerBar" class="speaker-bar" hidden></div>
     <textarea id="editorText" class="editor-text" placeholder="Text eingeben oder diktieren …" spellcheck="true"></textarea>
     <div class="dictate-bar">
       <canvas id="dictateWave" class="wave" aria-hidden="true"></canvas>
@@ -100,18 +110,60 @@
 
   <div id="recordDock" class="record-dock">
     <button id="recordBtn" class="record-btn" type="button" aria-label="Aufnahme starten"><span class="record-core"></span></button>
+    <button id="meetingBtn" class="meeting-btn" type="button" aria-label="Meeting aufnehmen">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3 20a6 6 0 0 1 12 0"/><circle cx="17" cy="9" r="2.6"/><path d="M16 14.2a5 5 0 0 1 6 4.8"/></svg>
+      <span>Meeting</span>
+    </button>
   </div>
 
   <section id="recordSheet" class="record-sheet" aria-hidden="true" inert>
     <div class="sheet-top">
       <span class="rec-indicator"></span>
       <span id="recordTimer" class="rec-timer">0:00</span>
+      <span id="recordMode" class="rec-mode" hidden>Meeting</span>
     </div>
     <div id="liveText" class="live-text" data-placeholder="Sprich einfach los …"></div>
     <div class="sheet-bottom">
       <p id="recordStatus" class="rec-status"></p>
       <canvas id="recordWave" class="wave wave-lg" aria-hidden="true"></canvas>
       <button id="stopBtn" class="stop-btn" type="button" aria-label="Aufnahme beenden"><span class="stop-core"></span></button>
+    </div>
+  </section>
+
+  <section id="settingsSheet" class="settings-sheet" aria-label="Einstellungen" aria-hidden="true" inert>
+    <header class="settings-header">
+      <h2 class="settings-title">Einstellungen</h2>
+      <button id="settingsDone" class="settings-done" type="button">Fertig</button>
+    </header>
+    <div class="settings-body">
+      <h3 class="settings-group">Transkription</h3>
+      <div class="settings-card">
+        <label class="settings-row">
+          <span class="settings-label">Groq Whisper<small>Standard, schnell</small></span>
+          <input type="radio" name="provider" value="groq" />
+        </label>
+        <label class="settings-row">
+          <span class="settings-label">Microsoft MAI<small>Genauer, ca. 10 Cent pro Stunde</small></span>
+          <input type="radio" name="provider" value="mai" />
+        </label>
+        <label class="settings-row">
+          <span class="settings-label">Ersatz-Anbieter<small>Fällt einer aus, springt der andere ein</small></span>
+          <input id="fallbackToggle" type="checkbox" class="switch" />
+        </label>
+      </div>
+      <p class="settings-note">Meetings laufen immer über Microsoft MAI, weil nur das die Sprecher erkennt.</p>
+
+      <h3 class="settings-group">Zusammenfassung</h3>
+      <div class="settings-card">
+        <div class="settings-row settings-row-static">
+          <span class="settings-label">Modell<small id="summaryModelName"></small></span>
+        </div>
+        <label class="model-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input id="modelSearch" type="search" placeholder="Modell suchen (OpenRouter)" autocomplete="off" />
+        </label>
+        <div id="modelList" class="model-list"></div>
+      </div>
     </div>
   </section>
 

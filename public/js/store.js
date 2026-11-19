@@ -1,5 +1,5 @@
 // Notes and folders persistence in localStorage.
-// Note = { id, text, createdAt, updatedAt, folderId? }
+// Note = { id, text, createdAt, updatedAt, folderId?, speakers? } (speakers: names used in a meeting transcript)
 // Folder = { id, name, createdAt }
 
 const KEY = "whisperflow.notes.v2";
@@ -14,7 +14,7 @@ export function onChange(fn) {
   changeListener = fn;
 }
 
-function newId() {
+export function newId() {
   if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
@@ -80,9 +80,9 @@ export function getNote(id) {
   return readAll().find((n) => n.id === id) ?? null;
 }
 
-export function createNote(text = "", folderId = null) {
+export function createNote(text = "", folderId = null, id = newId(), extra = {}) {
   const now = new Date().toISOString();
-  const note = { id: newId(), text, createdAt: now, updatedAt: now, folderId };
+  const note = { ...extra, id, text, createdAt: now, updatedAt: now, folderId };
   writeAll([...readAll(), note]);
   return note;
 }
@@ -115,6 +115,16 @@ export function restoreNote(note) {
   if (!listFolders().some((f) => f.id === restored.folderId)) restored.folderId = null;
   writeAll([...notes, restored]);
   return restored;
+}
+
+// Sets fields other than the text (e.g. speakers); keeps updatedAt.
+export function setNoteFields(id, fields) {
+  const notes = readAll();
+  const index = notes.findIndex((n) => n.id === id);
+  if (index < 0) return null;
+  notes[index] = { ...notes[index], ...fields, id };
+  writeAll(notes);
+  return notes[index];
 }
 
 // Moving a note keeps updatedAt, so the list order does not change.

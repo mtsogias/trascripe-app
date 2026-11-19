@@ -1,6 +1,11 @@
 // Whisperflow UI: note list, editor, recording sheet and dictation into the editor.
 import * as store from "./store.js";
 import * as backup from "./backup.js";
+import * as diag from "./diag.js";
+import * as settings from "./settings.js";
+import * as pending from "./pending.js";
+import * as meeting from "./meeting.js";
+import * as api from "./api.js";
 import { TranscriptionSession } from "./session.js";
 import { createWaveform } from "./waveform.js";
 
@@ -18,6 +23,7 @@ const sidebarBackdrop = $("#sidebarBackdrop");
 const folderList = $("#folderList");
 const newFolderBtn = $("#newFolderBtn");
 const backupStatus = $("#backupStatus");
+const diagBtn = $("#diagBtn");
 const backupBtn = $("#backupBtn");
 const folderMenuBtn = $("#folderMenuBtn");
 const folderMenu = $("#folderMenu");
@@ -42,6 +48,19 @@ const liveText = $("#liveText");
 const recordStatus = $("#recordStatus");
 const recordWaveform = createWaveform($("#recordWave"));
 const stopBtn = $("#stopBtn");
+const meetingBtn = $("#meetingBtn");
+const recordMode = $("#recordMode");
+const summaryBtn = $("#summaryBtn");
+const noteBanner = $("#noteBanner");
+const noteBannerText = $("#noteBannerText");
+const noteBannerBtn = $("#noteBannerBtn");
+const speakerBar = $("#speakerBar");
+const settingsSheet = $("#settingsSheet");
+const settingsDone = $("#settingsDone");
+const fallbackToggle = $("#fallbackToggle");
+const modelSearch = $("#modelSearch");
+const modelList = $("#modelList");
+const summaryModelName = $("#summaryModelName");
 const toastEl = $("#toast");
 const toastText = $("#toastText");
 const toastAction = $("#toastAction");
@@ -59,15 +78,17 @@ const START_ERRORS = {
   "no-mic": "Kein Mikrofon gefunden",
   unsupported: "Aufnahme wird nicht unterstützt",
 };
-const CHUNK_ERROR = "Ein Abschnitt konnte nicht transkribiert werden";
+const SUMMARY_SEP = "\n\n————\n\n";
 const ACTIVE_FOLDER_KEY = "whisperflow.activeFolder.v1";
 const EDGE_PX = 28;        // edge swipes start this close to the left edge
 const ACTIONS_PX = 160;    // width of a card's swipe actions
 const NEW_FOLDER = "__new";
 
-let recSession = null;     // active recording session
-let recNoteId = null;      // note created for the current recording
+let recSession = null;     // active recording session (normal note)
+let recMeeting = null;     // active meeting recording
+let recNoteId = null;      // note id of the current recording (the note is created with the first text)
 let recFinishing = false;
+let recWarned = new Set(); // error kinds already shown during this recording
 let dict = null;           // active dictation: { session, before, after, prefix, suffix, stopping }
 let currentId = null;      // note open in the editor
 let leaving = false;       // editor is closing (waiting for dictation to stop)
@@ -78,7 +99,7 @@ let wakeLock = null;
 let toastTimer = null;
 let activeFolder = loadActiveFolder(); // folder id shown in the list; null = "Alle"
 
-const busy = () => recSession !== null || dict !== null;
+const busy = () => recSession !== null || recMeeting !== null || dict !== null;
 
 // ---------- Helpers ----------
 
@@ -196,7 +217,18 @@ async function holdWakeLock() {
   try {
     const lock = await navigator.wakeLock?.request("screen");
     wakeLock = lock ?? null;
-  } catch {}
+    diag.log(lock ? "wakelock on" : "wakelock unsupported");
+    lock?.addEventListener("release", () => {
+      diag.log("wakelock released");
+      // The system can drop the lock while we are still recording (e.g. low power mode): take it back.
+      if (wakeLock === lock && busy() && document.visibilityState === "visible") {
+        wakeLock = null;
+        holdWakeLock();
+      }
+    });
+  } catch (err) {
+    diag.log("wakelock failed", { err: err?.message });
+  }
 }
 
 function releaseWakeLock() {
@@ -276,6 +308,12 @@ function moveNoteFromSelect(noteId, select) {
 }
 
 function toastDeleted(deleted) {
+  // Saved audio of the note goes once undo is no longer possible.
+  setTimeout(() => {
+    if (store.getNote(deleted.id)) return;
+    pending.forget(deleted.id);
+    meeting.forget(deleted.id);
+  }, 6000);
   toast("Notiz gelöscht", {
     actionLabel: "Widerrufen",
     duration: 5000,
@@ -382,8 +420,7 @@ function renderList() {
   const title = folder ? folder.name : "Notizen";
   listTitle.textContent = title;
   backLabel.textContent = title;
-  folderMenuBtn.hidden = !folder;
-  if (!folder) closeFolderMenu();
+  for (const item of folderMenu.querySelectorAll("[data-folder-only]")) item.hidden = !folder;
 
   const inFolder = folder ? all.filter((n) => n.folderId === folder.id) : all;
   const query = searchInput.value.trim().toLowerCase();
@@ -657,6 +694,8 @@ async function restoreBackup() {
   applyBackup(data);
 }
 
+diagBtn.addEventListener("click", () => copyText(diag.text()));
+
 backupBtn.addEventListener("click", () => (backup.status().setUp ? restoreBackup() : setupBackup()));
 
 backup.onStatus((event) => {
@@ -686,6 +725,10 @@ folderMenu.addEventListener("click", (event) => {
   const action = event.target.closest("[data-action]")?.dataset.action;
   if (!action) return;
   closeFolderMenu();
+  if (action === "settings") {
+    openSettings();
+    return;
+  }
   const folder = store.listFolders().find((f) => f.id === activeFolder);
   if (!folder) return;
 
@@ -702,8 +745,12 @@ folderMenu.addEventListener("click", (event) => {
 
 // ---------- Recording (new note) ----------
 
-function openSheet() {
+function openSheet(mode = "note") {
   liveText.textContent = "";
+  liveText.dataset.placeholder = mode === "meeting"
+    ? "Meeting läuft. Lass den Bildschirm an.\nDer Text mit Sprechern kommt nach dem Stoppen."
+    : "Sprich einfach los …";
+  recordMode.hidden = mode !== "meeting";
   recordStatus.textContent = "";
   recordTimer.textContent = "0:00";
   recordSheet.classList.remove("is-finishing");
@@ -731,21 +778,39 @@ function stopTimer() {
   timerId = null;
 }
 
+// A chunk could not be sent during a recording or dictation: say why, once per kind.
+function warnChunk(err) {
+  const kind = err?.allBlocked || api.isAccountProblem(err) ? `account-${err.code}` : "temporary";
+  if (recWarned.has(kind)) return;
+  recWarned.add(kind);
+  if (kind === "temporary") {
+    toast("Abschnitt gesichert, wird automatisch nachgereicht", { duration: 4000 });
+  } else {
+    toast(`${api.errorMessage(err)}. Die Aufnahme läuft weiter und wird gesichert.`, { duration: 7000 });
+  }
+}
+
 async function startRecording() {
   if (busy()) return;
   openSheet();
+  recWarned = new Set();
+  recNoteId = store.newId();
   const session = new TranscriptionSession({
+    noteId: recNoteId,
     onText: (full) => onRecordingText(session, full),
     onState: (state) => onRecordingState(session, state),
-    onError: (err, kind) => onRecordingError(session, kind),
+    onError: (err, kind) => onRecordingError(session, err, kind),
   });
   recSession = session;
+  diag.begin("recording");
   try {
     await session.start();
   } catch (err) {
+    diag.end(`start failed: ${err?.code || err?.message}`);
     // Stopped while starting: finishRecording owns the cleanup and toast.
     if (session !== recSession || recFinishing) return;
     recSession = null;
+    recNoteId = null;
     closeSheet();
     toast(startErrorMessage(err));
     return;
@@ -755,33 +820,36 @@ async function startRecording() {
   holdWakeLock();
 }
 
+// Persist as we go so a crash mid-recording keeps the text.
+function saveRecordingText(text) {
+  if (store.getNote(recNoteId)) safe(() => store.updateNote(recNoteId, text));
+  else safe(() => store.createNote(text, activeFolder, recNoteId));
+}
+
 function onRecordingText(session, full) {
   if (session !== recSession) return;
   liveText.textContent = full;
   liveText.scrollTop = liveText.scrollHeight;
-  // Persist as we go so a crash mid-recording keeps the text.
-  if (recNoteId) {
-    safe(() => store.updateNote(recNoteId, full));
-  } else {
-    recNoteId = safe(() => store.createNote(full, activeFolder))?.id ?? null;
-  }
+  saveRecordingText(full);
 }
 
-function onRecordingState(session, { phase, pending }) {
+function onRecordingState(session, { phase, pending: count }) {
   if (session !== recSession || phase !== "finishing") return;
-  recordStatus.textContent = pending ? `Transkribiere … (${pending})` : "Transkribiere …";
+  recordStatus.textContent = count ? `Transkribiere … (${count})` : "Transkribiere …";
 }
 
-function onRecordingError(session, kind) {
+function onRecordingError(session, err, kind) {
   if (session !== recSession) return;
-  if (kind === "fatal") finishRecording();
-  else toast(CHUNK_ERROR);
+  if (kind === "fatal") finishRecording("mic error");
+  else warnChunk(err);
 }
 
-async function finishRecording() {
+async function finishRecording(reason = "stop button") {
+  if (recMeeting) return finishMeeting(reason);
   const session = recSession;
   if (!session || recFinishing) return;
   recFinishing = true;
+  diag.log("finishing", { reason });
   recordSheet.classList.add("is-finishing");
   stopTimer();
   recordWaveform.stop();
@@ -794,22 +862,95 @@ async function finishRecording() {
   recFinishing = false;
   releaseWakeLock();
   closeSheet();
+  diag.end(`${reason}, ${text.length} chars, ${session.failed} failed`);
 
+  const exists = !!store.getNote(noteId);
   if (text) {
-    let id = noteId;
-    if (id) safe(() => store.updateNote(id, text));
-    else id = safe(() => store.createNote(text, activeFolder))?.id ?? null;
+    if (exists) safe(() => store.updateNote(noteId, text));
+    else safe(() => store.createNote(text, activeFolder, noteId));
     renderList();
-    if (id) openEditor(id);
+    openEditor(noteId);
   } else {
-    if (noteId) safe(() => store.deleteNote(noteId));
+    if (exists) safe(() => store.deleteNote(noteId));
     renderList();
     toast("Nichts erkannt");
   }
 }
 
+// ---------- Meeting recording ----------
+
+async function startMeeting() {
+  if (busy()) return;
+  openSheet("meeting");
+  recWarned = new Set();
+  recNoteId = store.newId();
+  const rec = new meeting.MeetingRecording({
+    noteId: recNoteId,
+    onError: (err) => {
+      if (rec !== recMeeting) return;
+      if (err.code === "storage") {
+        toast("Speicher voll: Die Aufnahme kann nicht mehr gesichert werden", { duration: 7000 });
+      } else {
+        finishMeeting("mic error");
+      }
+    },
+  });
+  recMeeting = rec;
+  meeting.markActive(rec.id, true);
+  diag.begin("meeting");
+  try {
+    await rec.start();
+  } catch (err) {
+    diag.end(`start failed: ${err?.code || err?.message}`);
+    if (rec !== recMeeting || recFinishing) return;
+    meeting.markActive(rec.id, false);
+    recMeeting = null;
+    recNoteId = null;
+    closeSheet();
+    toast(startErrorMessage(err));
+    return;
+  }
+  recordWaveform.start(rec.analyser);
+  startTimer();
+  holdWakeLock();
+}
+
+function meetingPlaceholder(sec) {
+  return `Meeting · ${Math.max(1, Math.round(sec / 60))} Min.\n\n${meeting.PLACEHOLDER}`;
+}
+
+async function finishMeeting(reason = "stop button") {
+  const rec = recMeeting;
+  if (!rec || recFinishing) return;
+  recFinishing = true;
+  diag.log("finishing", { reason });
+  recordSheet.classList.add("is-finishing");
+  stopTimer();
+  recordWaveform.stop();
+  recordStatus.textContent = "Speichere …";
+  try {
+    await rec.stop();
+  } catch (err) {
+    diag.log("meeting stop failed", { err: String(err) });
+  }
+  const noteId = recNoteId;
+  meeting.markActive(rec.id, false);
+  recMeeting = null;
+  recNoteId = null;
+  recFinishing = false;
+  releaseWakeLock();
+  closeSheet();
+  diag.end(`${reason}, meeting ${Math.round(rec.durationSec)} s`);
+
+  safe(() => store.createNote(meetingPlaceholder(rec.durationSec), activeFolder, noteId));
+  renderList();
+  openEditor(noteId);
+  meeting.retry({ noteId });
+}
+
 recordBtn.addEventListener("click", startRecording);
-stopBtn.addEventListener("click", finishRecording);
+meetingBtn.addEventListener("click", startMeeting);
+stopBtn.addEventListener("click", () => finishRecording());
 
 // ---------- Editor ----------
 
@@ -830,6 +971,8 @@ function openEditor(id) {
   editorView.classList.add("is-active");
   editorView.setAttribute("aria-hidden", "false");
   editorView.inert = false;
+  renderSpeakers();
+  refreshBanner();
 }
 
 function renderNoteFolder(folderId) {
@@ -937,6 +1080,10 @@ editorView.addEventListener("touchend", endSwipe);
 editorView.addEventListener("touchcancel", endSwipe);
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
+  if (settingsSheet.classList.contains("is-open")) {
+    closeSettings();
+    return;
+  }
   closeFolderMenu();
   closeSidebar();
   closeEditor();
@@ -981,22 +1128,25 @@ async function startDictation() {
   const suffix = after && !/^[\s.,!?;:]/.test(after) ? " " : "";
 
   const d = { before, after, prefix, suffix, session: null, stopping: null };
+  recWarned = new Set();
   d.session = new TranscriptionSession({
+    noteId: currentId,
     onText: (full) => {
       if (dict !== d) return;
       editorText.value = before + (full ? prefix + full + suffix : "") + after;
       autosize();
-      scheduleSave();
+      saveNow(); // right away: the saved audio of this chunk is deleted next
     },
     onState: () => {},
     onError: (err, kind) => {
       if (dict !== d) return;
       if (kind === "fatal") stopDictation();
-      else toast(CHUNK_ERROR);
+      else warnChunk(err);
     },
   });
 
   dict = d;
+  diag.begin("dictation");
   editorText.readOnly = true;
   dictateBtn.classList.add("is-active");
   dictateBtn.setAttribute("aria-label", "Diktat beenden");
@@ -1005,6 +1155,7 @@ async function startDictation() {
     await d.session.start();
   } catch (err) {
     // Stopped while starting: finishDictation owns the cleanup and toast.
+    diag.end(`start failed: ${err?.code || err?.message}`);
     if (dict !== d || d.stopping) return;
     dict = null;
     resetDictationUi();
@@ -1035,20 +1186,320 @@ async function finishDictation(d) {
   saveNow();
   editorText.setSelectionRange(caret, caret);
   releaseWakeLock();
+  diag.end(`dictation, ${full.length} chars, ${d.session.failed} failed`);
+  refreshBanner();
   if (!full) toast("Nichts erkannt");
 }
+
+// ---------- Late text: retried chunks, meetings ----------
+
+// Changes a note's text from outside the editor (late transcripts). fn(oldText | null) returns the new text,
+// or undefined to leave it. Keeps the editor in sync when the note is open.
+function withNoteText(noteId, fn) {
+  const open = currentId === noteId && !leaving;
+  if (open) saveNow();
+  const note = store.getNote(noteId);
+  const next = fn(note ? note.text : null);
+  if (next === undefined || next === note?.text) return;
+  if (note) safe(() => store.updateNote(noteId, next));
+  else safe(() => store.createNote(next, null, noteId));
+  if (open) {
+    const caret = editorText.selectionStart;
+    const delta = next.length - editorText.value.length;
+    const atEnd = caret >= editorText.value.length;
+    editorText.value = next;
+    const pos = atEnd ? next.length : Math.max(0, Math.min(next.length, caret + (caret > 0 ? delta : 0)));
+    if (document.activeElement === editorText) editorText.setSelectionRange(pos, pos);
+    autosize();
+    renderSpeakers();
+  }
+  if (app.dataset.view === "list") renderList();
+}
+
+// Puts a late chunk's text where its marker is. Returns true when the saved chunk can go.
+function applyChunk(rec, text) {
+  withNoteText(rec.noteId, (old) => {
+    // A failed chunk whose note is gone: the note was deleted, so the text is not wanted.
+    if (old === null) return rec.status === "failed" || !text ? undefined : text;
+    if (old.includes(rec.marker)) {
+      const replaced = old.replace(rec.marker, text);
+      return text ? replaced : replaced.replace(/ {2,}/g, " ").replace(/\n{3,}/g, "\n\n");
+    }
+    // Marker edited away (or never placed after a crash): add the text at the end.
+    return text ? `${old.trimEnd()}\n\n${text}` : undefined;
+  });
+  return true;
+}
+
+function applyMeeting(m, text, speakers) {
+  withNoteText(m.noteId, (old) => {
+    if (old === null) return text;
+    const head = old.indexOf(`\n\n${meeting.PLACEHOLDER}`);
+    if (head >= 0 && old.startsWith("Meeting · ")) {
+      return text + old.slice(head + 2 + meeting.PLACEHOLDER.length);
+    }
+    if (old.includes(meeting.PLACEHOLDER)) return old.replace(meeting.PLACEHOLDER, text);
+    return `${old.trimEnd()}\n\n${text}`;
+  });
+  if (speakers.length) safe(() => store.setNoteFields(m.noteId, { speakers }));
+  if (currentId === m.noteId) renderSpeakers();
+  return true;
+}
+
+let bannerRun = 0;
+
+async function refreshBanner() {
+  const run = ++bannerRun;
+  const noteId = currentId;
+  if (!noteId) {
+    noteBanner.hidden = true;
+    return;
+  }
+  const [counts, meetings] = await Promise.all([pending.countByNote(), meeting.statusByNote()]);
+  if (run !== bannerRun || noteId !== currentId) return;
+  const m = meetings.get(noteId);
+  const open = counts.get(noteId) ?? 0;
+  let text = "";
+  let busyNow = false;
+  let canRetry = false;
+  if (m && m.status !== "failed") {
+    text = "Meeting wird transkribiert …";
+    busyNow = true;
+  } else if (m) {
+    text = `Meeting noch nicht transkribiert${m.lastError ? `: ${m.lastError}` : ""}`;
+    canRetry = true;
+  } else if (open) {
+    text = open === 1 ? "1 Stelle wird noch nachgereicht" : `${open} Stellen werden noch nachgereicht`;
+    canRetry = true;
+  }
+  noteBanner.hidden = !text;
+  noteBannerText.textContent = text;
+  noteBanner.classList.toggle("is-busy", busyNow || noteBannerBtn.disabled);
+  noteBannerBtn.hidden = !canRetry;
+}
+
+noteBannerBtn.addEventListener("click", async () => {
+  const noteId = currentId;
+  if (!noteId || noteBannerBtn.disabled) return;
+  noteBannerBtn.disabled = true;
+  noteBanner.classList.add("is-busy");
+  try {
+    const [chunks] = await Promise.all([
+      pending.retry({ force: true, noteId }),
+      meeting.retry({ force: true, noteId }),
+    ]);
+    if (chunks?.failed) toast("Noch nicht geklappt, die App versucht es weiter");
+  } finally {
+    noteBannerBtn.disabled = false;
+    refreshBanner();
+  }
+});
+
+// ---------- Speakers ----------
+
+const escapeRe = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+function renderSpeakers() {
+  const note = currentId ? store.getNote(currentId) : null;
+  const speakers = Array.isArray(note?.speakers) ? note.speakers : [];
+  speakerBar.replaceChildren();
+  speakerBar.hidden = !speakers.length;
+  if (!speakers.length) return;
+  speakerBar.append(el("span", undefined, "Sprecher benennen:"));
+  for (const name of speakers) {
+    const chip = el("button", "speaker-chip", name);
+    chip.type = "button";
+    chip.dataset.name = name;
+    speakerBar.append(chip);
+  }
+}
+
+speakerBar.addEventListener("click", (event) => {
+  const chip = event.target.closest(".speaker-chip");
+  if (!chip || !currentId || dict) return;
+  const old = chip.dataset.name;
+  const raw = prompt(`Name für „${old}“`, old.startsWith("Sprecher ") ? "" : old);
+  const name = raw?.replace(/[:\n\r[\]]/g, " ").replace(/\s+/g, " ").trim().slice(0, 40);
+  if (!name || name === old) return;
+  const note = store.getNote(currentId);
+  const speakers = note?.speakers ?? [];
+  if (speakers.includes(name)) {
+    toast("Diesen Namen gibt es schon");
+    return;
+  }
+  // Only speaker labels at the start of a turn ("[1:23] Name: …") are renamed.
+  const label = new RegExp(`^(\\[[\\d:]+\\] )${escapeRe(old)}:`, "gm");
+  withNoteText(currentId, (text) => (text === null ? undefined : text.replace(label, `$1${name}:`)));
+  safe(() => store.setNoteFields(currentId, { speakers: speakers.map((s) => (s === old ? name : s)) }));
+  renderSpeakers();
+});
+
+// ---------- Summary ----------
+
+let summarizing = false;
+
+summaryBtn.addEventListener("click", async () => {
+  if (!currentId || dict || leaving || summarizing) return;
+  saveNow();
+  const noteId = currentId;
+  const full = editorText.value;
+  // A second run replaces the old summary instead of summarising it too.
+  const sep = full.indexOf(SUMMARY_SEP);
+  const body = (full.startsWith("Zusammenfassung") && sep >= 0 ? full.slice(sep + SUMMARY_SEP.length) : full).trim();
+  if (!body) {
+    toast("Nichts zum Zusammenfassen");
+    return;
+  }
+  summarizing = true;
+  summaryBtn.classList.add("is-busy");
+  editorText.readOnly = true;
+  toast("Fasse zusammen …", { duration: 60000 });
+  try {
+    const { summary } = await api.summarize(body, settings.get().summaryModel);
+    withNoteText(noteId, (text) => {
+      if (text === null) return undefined;
+      const s2 = text.indexOf(SUMMARY_SEP);
+      const rest = text.startsWith("Zusammenfassung") && s2 >= 0 ? text.slice(s2 + SUMMARY_SEP.length) : text;
+      return `${summary.trim()}${SUMMARY_SEP}${rest.trimStart()}`;
+    });
+    hideToast();
+    if (currentId === noteId) editorView.scrollTop = 0;
+  } catch (err) {
+    toast(`Zusammenfassung fehlgeschlagen: ${api.errorMessage({ ...err, provider: "openrouter" })}`, { duration: 6000 });
+  } finally {
+    summarizing = false;
+    summaryBtn.classList.remove("is-busy");
+    if (!dict) editorText.readOnly = false;
+  }
+});
+
+// ---------- Settings ----------
+
+let models = null; // [{ id, name, prompt, completion }] from OpenRouter, loaded on first open
+let modelsFailed = false;
+
+function openSettings() {
+  const current = settings.get();
+  for (const radio of settingsSheet.querySelectorAll('input[name="provider"]')) {
+    radio.checked = radio.value === current.provider;
+  }
+  fallbackToggle.checked = current.fallback;
+  modelSearch.value = "";
+  renderModels();
+  settingsSheet.classList.add("is-open");
+  settingsSheet.setAttribute("aria-hidden", "false");
+  settingsSheet.inert = false;
+  listView.inert = true;
+  recordDock.inert = true;
+  if (!models) loadModels();
+}
+
+function closeSettings() {
+  if (!settingsSheet.classList.contains("is-open")) return;
+  settingsSheet.classList.remove("is-open");
+  settingsSheet.setAttribute("aria-hidden", "true");
+  settingsSheet.inert = true;
+  listView.inert = false;
+  recordDock.inert = false;
+  modelSearch.blur();
+}
+
+async function loadModels() {
+  modelsFailed = false;
+  try {
+    const data = await api.listModels();
+    models = Array.isArray(data?.models) ? data.models : [];
+  } catch {
+    modelsFailed = true;
+  }
+  renderModels();
+}
+
+// Rough cost of summarising a one-hour meeting (~15k tokens in, ~1k out).
+function costLabel(m) {
+  const dollars = (15000 * (m.prompt ?? 0) + 1000 * (m.completion ?? 0)) / 1e6;
+  if (!dollars) return "kostenlos";
+  const cents = dollars * 100;
+  if (cents < 1) return "< 1 Cent/Std.";
+  return `≈ ${cents < 10 ? cents.toFixed(1).replace(".", ",") : Math.round(cents)} Cent/Std.`;
+}
+
+function renderModels() {
+  const current = settings.get().summaryModel;
+  const known = models?.find((m) => m.id === current);
+  summaryModelName.textContent = known ? `${known.name} · ${costLabel(known)}` : current;
+  modelList.replaceChildren();
+  if (!models) {
+    modelList.append(el("p", "model-empty", modelsFailed ? "Modell-Liste nicht erreichbar" : "Lade Modelle …"));
+    return;
+  }
+  const query = modelSearch.value.trim().toLowerCase();
+  const hits = models
+    .filter((m) => !query || m.id.toLowerCase().includes(query) || m.name.toLowerCase().includes(query))
+    .slice(0, 40);
+  if (!hits.length) {
+    modelList.append(el("p", "model-empty", "Kein Modell gefunden"));
+    return;
+  }
+  for (const m of hits) {
+    const item = el("button", "model-item");
+    item.type = "button";
+    item.dataset.id = m.id;
+    item.classList.toggle("is-selected", m.id === current);
+    item.append(el("span", undefined, m.name), el("small", undefined, costLabel(m)));
+    modelList.append(item);
+  }
+}
+
+settingsSheet.addEventListener("change", (event) => {
+  if (event.target.name === "provider") settings.set({ provider: event.target.value });
+  if (event.target === fallbackToggle) settings.set({ fallback: fallbackToggle.checked });
+});
+
+modelSearch.addEventListener("input", renderModels);
+
+modelList.addEventListener("click", (event) => {
+  const item = event.target.closest(".model-item");
+  if (!item) return;
+  settings.set({ summaryModel: item.dataset.id });
+  renderModels();
+  toast("Modell für Zusammenfassungen gespeichert");
+});
+
+settingsDone.addEventListener("click", closeSettings);
+
+// ---------- Background retries ----------
+
+pending.configure({
+  apply: applyChunk,
+  // Not while that note is being recorded or dictated into: the session owns its text then.
+  skipNote: (noteId) => (recSession && noteId === recNoteId) || (dict && noteId === currentId),
+  onChange: refreshBanner,
+  onAccountProblem: (err) => toast(api.errorMessage(err), { duration: 5000 }),
+});
+
+meeting.configure({
+  apply: applyMeeting,
+  onChange: refreshBanner,
+  onError: (m) => toast(m.lastError || "Meeting konnte nicht transkribiert werden", { duration: 5000 }),
+});
 
 // ---------- Lifecycle ----------
 
 document.addEventListener("visibilitychange", () => {
+  if (busy()) diag.log("visibility", { state: document.visibilityState });
   if (document.visibilityState !== "hidden") return;
-  if (recSession) finishRecording();
+  if (recSession || recMeeting) finishRecording("app hidden");
   if (dict) stopDictation();
   saveNow();
   backup.flush();
 });
 
-window.addEventListener("pagehide", saveNow);
+window.addEventListener("pagehide", () => {
+  if (busy()) diag.log("pagehide");
+  diag.flush();
+  saveNow();
+});
 
 // ---------- Boot ----------
 
@@ -1058,6 +1509,8 @@ try {
 renderList();
 renderBackup();
 backup.schedule(); // catch up on changes a closed app never uploaded
+pending.startAuto();
+meeting.startAuto();
 navigator.storage?.persist?.().catch(() => {});
 
 if ("serviceWorker" in navigator) {

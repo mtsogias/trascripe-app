@@ -1,5 +1,9 @@
 {
   "cleanUrls": true,
   "rewrites": [{ "source": "/((?!api/).*)", "destination": "/public/$1" }],
-  "functions": { "api/transcribe.js": { "maxDuration": 60 } }
+  "functions": {
+    "api/transcribe.js": { "maxDuration": 60 },
+    "api/meeting.js": { "maxDuration": 300 },
+    "api/summarize.js": { "maxDuration": 120 }
+  }
 }
