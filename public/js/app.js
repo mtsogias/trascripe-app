@@ -1,4 +1,4 @@
-// Whisperflow UI: note list, editor, recording sheet and dictation into the editor.
+// Transcribe App UI: note list, editor, recording sheet and dictation into the editor.
 import * as store from "./store.js";
 import * as backup from "./backup.js";
 import * as diag from "./diag.js";

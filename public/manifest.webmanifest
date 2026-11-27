@@ -1,6 +1,6 @@
 {
-  "name": "Whisperflow",
-  "short_name": "Whisperflow",
+  "name": "Transcribe App",
+  "short_name": "Transcribe App",
   "description": "Sprechen, transkribieren, bearbeiten.",
   "start_url": "/",
   "scope": "/",

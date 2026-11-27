@@ -1,5 +1,5 @@
 {
-  "name": "whisperflow",
+  "name": "transcribe-app",
   "private": true,
   "type": "module",
   "dependencies": {
