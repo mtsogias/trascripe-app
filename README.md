@@ -4,6 +4,11 @@ Speak instead of type – on your iPhone. Record, transcribe automatically, edit
 
 **Live:** https://trascripe-app.vercel.app (open in Safari → Share → "Add to Home Screen")
 
+<p>
+  <img src="docs/transcribe-list.jpg" width="280" alt="Notes list">
+  <img src="docs/transcribe-meeting.jpg" width="280" alt="Meeting transcript with speakers">
+</p>
+
 ## Features
 - **Dictation & notes**: recording with live text, editor, folders, search, swipe gestures.
 - **Meeting mode**: records entire conversations and returns a transcript with speakers and timestamps (`[0:06] Speaker 2: …`).
