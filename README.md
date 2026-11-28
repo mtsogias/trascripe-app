@@ -5,8 +5,8 @@ Speak instead of type – on your iPhone. Record, transcribe automatically, edit
 **Live:** https://trascripe-app.vercel.app (open in Safari → Share → "Add to Home Screen")
 
 <p>
-  <img src="docs/transcribe-list.jpg" width="280" alt="Notes list">
-  <img src="docs/transcribe-meeting.jpg" width="280" alt="Meeting transcript with speakers">
+  <img src="docs/transcribe-list.jpg" width="220" alt="Notes list">
+  <img src="docs/transcribe-meeting.jpg" width="220" alt="Meeting transcript with speakers">
 </p>
 
 ## Features
